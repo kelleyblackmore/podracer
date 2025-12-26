@@ -1,0 +1,5 @@
+{
+  "name": "Apex Racer AI",
+  "description": "A high-octane 2D top-down racing simulator featuring real-time physics, dynamic tracks, and an AI Crew Chief powered by Gemini to analyze your telemetry and improve your driving.",
+  "requestFramePermissions": []
+}
