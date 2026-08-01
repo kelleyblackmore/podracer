@@ -18,6 +18,9 @@ export interface HudSnapshot {
   driftCharge: number;
   boosting: boolean;
   offTrack: boolean;
+  airborne: boolean;
+  airTime: number;
+  slipstream: number;
   /** Seconds to the racer ahead; null when leading. */
   gapAhead: number | null;
   standings: { id: string; name: string; color: string; position: number; isPlayer: boolean }[];
@@ -99,6 +102,9 @@ export function Hud({
     driftCharge,
     boosting,
     offTrack,
+    airborne,
+    airTime,
+    slipstream,
     gapAhead,
     standings,
   } = snapshot;
@@ -315,7 +321,24 @@ export function Hud({
         </div>
       )}
 
-      {offTrack && phase === 'RACING' && (
+      {airborne && (
+        <div className="absolute left-1/2 top-1/3 -translate-x-1/2 text-center">
+          <div className="font-display text-3xl font-black italic text-white drop-shadow-lg">
+            AIRBORNE
+          </div>
+          <div className="font-display text-lg tabular-nums text-amber-300">
+            {airTime.toFixed(2)}s
+          </div>
+        </div>
+      )}
+
+      {slipstream > 0.25 && !airborne && (
+        <div className="absolute left-1/2 top-14 -translate-x-1/2 rounded-full border border-cyan-400/50 bg-cyan-500/20 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-cyan-200 backdrop-blur">
+          Slipstream
+        </div>
+      )}
+
+      {offTrack && !airborne && phase === 'RACING' && (
         <div className="absolute left-1/2 top-20 -translate-x-1/2 rounded-full border border-amber-400/50 bg-amber-500/20 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-amber-200 backdrop-blur">
           Off track
         </div>

@@ -36,27 +36,42 @@ boost onto the straight instead of into the next braking zone.
 
 ### Circuits
 
-Eight circuits, each with its own shape, elevation profile and art direction.
+Eleven circuits across five worlds, each with its own shape, elevation profile,
+jumps and art direction.
 
-| Circuit | Difficulty | Notes |
-| --- | --- | --- |
-| Mos Espa Circuit | Easy | Wide banked sweepers, nearly flat out |
-| Dune Sea Loop | Medium | Figure-eight with a blind crossover |
-| Sebulba's Coliseum | Medium | Two huge straights into banked hairpins |
-| Coruscant Skyway | Medium | Elevated ribbon through the towers — big climbs and drops |
-| Beggar's Canyon | Hard | Red-rock spires, crests and a double apex |
-| Boonta Eve Classic | Hard | Long, constantly changing radii |
-| Jundland Knot | Hard | Crosses itself three times |
-| Ilum Ice Run | Hard | Six near-identical corners; pure rhythm |
+| Circuit | World | Difficulty | Notes |
+| --- | --- | --- | --- |
+| Mos Espa Circuit | Tatooine | Easy | Wide banked sweepers, one long jump |
+| Dune Sea Loop | Tatooine | Medium | Figure-eight over the dunes, a jump per loop |
+| Mos Espa Grand Arena | Tatooine | Medium | Huge straights, banked hairpins, packed stands |
+| Coruscant Skyway | Coruscant | Medium | Elevated ribbon through the towers |
+| Mon Gazza Speedway | Malastare | Medium | Mining country — fast, filthy, built for slipstreaming |
+| Beggar's Canyon | Tatooine | Hard | Sheer walls and a double apex |
+| Boonta Eve Classic | Tatooine | Hard | The long one; constantly changing radii |
+| Baroonda Rainforest | Baroonda | Hard | Blind, close and green |
+| Jundland Knot | Tatooine | Hard | Crosses itself three times |
+| Ilum Ice Run | Ilum | Hard | Six near-identical corners; pure rhythm |
+| Oovo IV Ravine | Oovo IV | Hard | An asteroid quarry with three big jumps |
 
 Three pods trade top speed against grip. Personal bests are stored per circuit in your
 browser.
 
-Circuits carry elevation and corner banking, but both are **purely cosmetic** — the
-simulation runs in the XZ plane, so how a track looks can never change how it drives.
-Corner speeds come from the centre line's curvature, which is why the generators in
-`constants.ts` keep a minimum corner radius: fold the centre line tighter than a pod can
-turn and the AI simply crawls through the corner.
+Circuits carry elevation and corner banking, both **purely cosmetic** — the simulation
+runs in the XZ plane, so how a track looks can never change how it drives. Jumps are the
+exception: a ramp's lip is load-bearing, and how far you fly depends on how fast you
+arrive. Corner speeds come from the centre line's curvature, which is why the generators
+in `constants.ts` keep a minimum corner radius: fold the centre line tighter than a pod
+can turn and the AI simply crawls through the corner.
+
+### Racecraft
+
+- **Slipstream.** Sit close behind another pod, roughly in line and pointed the same way,
+  and the tow is worth up to 14% top speed. The HUD tells you when you have it.
+- **Contact.** Pods collide properly — separation, a restitution impulse, tangential
+  scrub so rubbing alongside costs you both, and a yaw kick that knocks your nose off
+  line. Square hits push; glancing blows spin you.
+- **Jumps.** Land straight and you barely lose anything. Land sideways or heavily and you
+  scrub speed.
 
 ## The Crew Chief
 
@@ -114,7 +129,8 @@ src/
     textures.ts   Road, curb, chequer, runoff and barrier textures drawn into
                   canvases at load time — no image files to fetch.
     input.ts      Keyboard, gamepad and touch collapsed into one Controls struct.
-    audio.ts      Synthesised engine and effects — no audio assets.
+    audio.ts      Synthesised engine, rival engines, tyre scrub, wind and
+                  impacts — no audio assets.
     storage.ts    Personal bests and preferences in localStorage.
   components/     React shell, HUD, minimap and results screens.
 ```
