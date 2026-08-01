@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Flag, Gauge, Keyboard, LogOut, Play, RotateCcw } from 'lucide-react';
+import {
+  Flag,
+  Gauge,
+  Keyboard,
+  LogOut,
+  Play,
+  RotateCcw,
+  RefreshCw,
+  Smartphone,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import type { CameraMode, CarConfig, GameSessionStats, RaceSettings, TrackData } from '../types';
 import { CARS } from '../constants';
 import {
@@ -19,6 +30,7 @@ import { RaceScene } from './RaceScene';
 import { Hud, type HudSnapshot } from './Hud';
 import { Minimap } from './Minimap';
 import { TouchControls, useIsTouchDevice } from './TouchControls';
+import { useViewport } from './useViewport';
 
 interface RaceProps {
   track: TrackData;
@@ -76,7 +88,10 @@ export function Race({
   const [snapshot, setSnapshot] = useState<HudSnapshot>(EMPTY_SNAPSHOT);
   const [lapFlash, setLapFlash] = useState<{ time: number; isBest: boolean } | null>(null);
   const [finishing, setFinishing] = useState(false);
+  const [contextLost, setContextLost] = useState(false);
+  const [canvasKey, setCanvasKey] = useState(0);
   const isTouch = useIsTouchDevice();
+  const { compact, portrait } = useViewport();
 
   const geometry = useMemo(() => buildTrackGeometry(track), [track]);
   const race = useMemo(() => {
@@ -87,6 +102,7 @@ export function Race({
   const input = useMemo(() => new InputManager(), []);
   const audio = useMemo(() => new RaceAudio(muted), [restartToken]);
 
+  const canvasHost = useRef<HTMLDivElement>(null);
   const hudTimer = useRef(0);
   const finishTimer = useRef<number | null>(null);
   const endedRef = useRef(false);
@@ -131,7 +147,16 @@ export function Race({
   useEffect(() => {
     audio.start();
     audio.resume();
-    return () => audio.dispose();
+    // iOS only unlocks an AudioContext inside a user gesture, so the call above
+    // leaves it suspended on Safari. Retry on the first touch or key press.
+    const unlock = () => audio.resume();
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      audio.dispose();
+    };
   }, [audio]);
 
   useEffect(() => {
@@ -157,6 +182,50 @@ export function Race({
     },
     [],
   );
+
+  /**
+   * Mobile GPUs drop the WebGL context under memory pressure or when the app is
+   * backgrounded; without handling it the canvas goes black for good, which is
+   * indistinguishable from a crash. The listener is attached to the DOM node
+   * rather than from inside <Canvas>, because a component in the R3F tree only
+   * mounts once the renderer is healthy — precisely what is not true here.
+   */
+  useEffect(() => {
+    const host = canvasHost.current;
+    if (!host) return;
+    let canvas: HTMLCanvasElement | null = null;
+
+    const handleLost = (event: Event) => {
+      // preventDefault keeps the context restorable.
+      event.preventDefault();
+      setContextLost(true);
+      setPaused(true);
+      audio.silenceEngine();
+    };
+
+    // The canvas is created by R3F on mount, so poll briefly for it.
+    let tries = 0;
+    const attach = () => {
+      canvas = host.querySelector('canvas');
+      if (canvas) {
+        canvas.addEventListener('webglcontextlost', handleLost);
+      } else if (tries++ < 60) {
+        timer = window.setTimeout(attach, 50);
+      }
+    };
+    let timer = window.setTimeout(attach, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      canvas?.removeEventListener('webglcontextlost', handleLost);
+    };
+  }, [audio, canvasKey]);
+
+  /** Remount the Canvas to build a fresh WebGL context. */
+  const recoverContext = useCallback(() => {
+    setContextLost(false);
+    setCanvasKey((key) => key + 1);
+  }, []);
 
   const finish = useCallback(
     (state: RaceState) => {
@@ -337,14 +406,17 @@ export function Race({
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-slate-950">
-      <RaceScene
-        race={race}
-        input={input}
-        cameraMode={cameraMode}
-        quality={quality}
-        paused={paused || finishing}
-        onFrame={handleFrame}
-      />
+      <div ref={canvasHost} className="absolute inset-0">
+        <RaceScene
+          key={canvasKey}
+          race={race}
+          input={input}
+          cameraMode={cameraMode}
+          quality={quality}
+          paused={paused || finishing || contextLost}
+          onFrame={handleFrame}
+        />
+      </div>
 
       <Hud
         snapshot={snapshot}
@@ -354,14 +426,19 @@ export function Race({
         lastLapFlash={lapFlash}
         onToggleCamera={cycleCamera}
         onToggleMute={() => onMuteChange(!muted)}
+        compact={compact}
         onPause={() => setPaused(true)}
         onRestart={restart}
         onExit={onExit}
       />
 
-      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 sm:bottom-6 sm:left-auto sm:right-6 sm:top-1/2 sm:-translate-x-0 sm:-translate-y-1/2">
-        <Minimap race={race} />
-      </div>
+      {/* The minimap used to sit bottom-centre, directly on top of the steering
+          and drift pads. On compact screens it is dropped entirely. */}
+      {!compact && (
+        <div className="pointer-events-none absolute bottom-6 right-6 top-1/2 -translate-y-1/2">
+          <Minimap race={race} />
+        </div>
+      )}
 
       {isTouch && !paused && !finishing && <TouchControls input={input} />}
 
@@ -372,6 +449,45 @@ export function Race({
           <div className="mt-2 text-slate-300">
             P{race.player.position} · {formatTime(race.player.finishTime ?? race.clock)}
           </div>
+        </div>
+      )}
+
+      {contextLost && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/90 p-6 backdrop-blur">
+          <div className="max-w-sm rounded-2xl border border-amber-500/40 bg-slate-900 p-6 text-center">
+            <RefreshCw className="mx-auto mb-3 h-8 w-8 text-amber-400" />
+            <h2 className="font-display text-xl font-bold text-white">Graphics context lost</h2>
+            <p className="mt-2 text-sm text-slate-400">
+              The browser reclaimed the 3D context — usually low memory or the app being
+              backgrounded. Your race is still here.
+            </p>
+            <button
+              type="button"
+              onClick={recoverContext}
+              className="mt-5 w-full rounded-lg bg-blue-600 px-5 py-3 font-display font-bold text-white transition-colors hover:bg-blue-500"
+            >
+              Restore graphics
+            </button>
+            <button
+              type="button"
+              onClick={onExit}
+              className="mt-2 w-full rounded-lg bg-slate-800 px-5 py-3 font-bold text-slate-300 transition-colors hover:bg-slate-700"
+            >
+              Quit to paddock
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Portrait leaves no room for the pads and the road at once. */}
+      {isTouch && portrait && !contextLost && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-slate-950/95 p-8 text-center">
+          <Smartphone className="h-12 w-12 animate-pulse text-blue-400" />
+          <h2 className="font-display text-2xl font-bold text-white">Rotate your device</h2>
+          <p className="max-w-xs text-sm text-slate-400">
+            Podracer plays in landscape. Turn your phone sideways to get the full track and the
+            controls on screen at once.
+          </p>
         </div>
       )}
 
@@ -395,6 +511,14 @@ export function Race({
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-800 px-5 py-3 font-bold text-white transition-colors hover:bg-slate-700"
               >
                 <RotateCcw className="h-4 w-4" /> Restart race
+              </button>
+              <button
+                type="button"
+                onClick={() => onMuteChange(!muted)}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-800 px-5 py-3 font-bold text-white transition-colors hover:bg-slate-700"
+              >
+                {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                {muted ? 'Unmute' : 'Mute'}
               </button>
               <button
                 type="button"

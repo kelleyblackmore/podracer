@@ -1,16 +1,17 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Flame, Wind } from 'lucide-react';
 import type { InputManager } from '../game/input';
+import { isTouchPrimary } from '../game/device';
 
 /** Touch-primary devices only; a mouse user gets the keyboard scheme instead. */
 export function useIsTouchDevice(): boolean {
   const [isTouch, setIsTouch] = useState(false);
   useEffect(() => {
+    const update = () => setIsTouch(isTouchPrimary());
+    update();
     const query = window.matchMedia('(pointer: coarse)');
-    setIsTouch(query.matches);
-    const listener = (event: MediaQueryListEvent) => setIsTouch(event.matches);
-    query.addEventListener('change', listener);
-    return () => query.removeEventListener('change', listener);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
   }, []);
   return isTouch;
 }

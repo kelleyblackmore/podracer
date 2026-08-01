@@ -7,6 +7,14 @@
   body,
   #root {
     height: 100%;
+    /* Mobile browsers shrink the layout viewport as their toolbars collapse;
+       dvh tracks that, so the race view is never clipped. */
+    height: 100dvh;
+  }
+
+  /* The canvas must never scroll, zoom or pull-to-refresh under a steering finger. */
+  canvas {
+    touch-action: none;
   }
 
   body {
