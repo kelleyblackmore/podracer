@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local env (no keys are used at build time; the Gemini key is entered at runtime)
+.env
+.env.local
