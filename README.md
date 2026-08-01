@@ -30,15 +30,27 @@ boost onto the straight instead of into the next braking zone.
 
 ### Circuits
 
+Eight circuits, each with its own shape, elevation profile and art direction.
+
 | Circuit | Difficulty | Notes |
 | --- | --- | --- |
-| Mos Espa Circuit | Easy | Wide sweepers, nearly flat out |
+| Mos Espa Circuit | Easy | Wide banked sweepers, nearly flat out |
 | Dune Sea Loop | Medium | Figure-eight with a blind crossover |
-| Beggar's Canyon | Hard | Tight walls, double apex |
+| Sebulba's Coliseum | Medium | Two huge straights into banked hairpins |
+| Coruscant Skyway | Medium | Elevated ribbon through the towers — big climbs and drops |
+| Beggar's Canyon | Hard | Red-rock spires, crests and a double apex |
 | Boonta Eve Classic | Hard | Long, constantly changing radii |
+| Jundland Knot | Hard | Crosses itself three times |
+| Ilum Ice Run | Hard | Six near-identical corners; pure rhythm |
 
 Three pods trade top speed against grip. Personal bests are stored per circuit in your
 browser.
+
+Circuits carry elevation and corner banking, but both are **purely cosmetic** — the
+simulation runs in the XZ plane, so how a track looks can never change how it drives.
+Corner speeds come from the centre line's curvature, which is why the generators in
+`constants.ts` keep a minimum corner radius: fold the centre line tighter than a pod can
+turn and the AI simply crawls through the corner.
 
 ## The Crew Chief
 
@@ -91,8 +103,10 @@ src/
                   curvature and a corner-speed profile with lookahead braking.
     engine.ts     Pure simulation — physics, drift/boost, barriers, laps,
                   standings, rival AI. No React, no rendering.
-    trackMesh.ts  Builds road/runoff/barrier geometry from the same samples the
-                  physics uses, so visuals and collision always agree.
+    trackMesh.ts  Builds road/curb/runoff/barrier geometry from the same samples
+                  the physics uses, so visuals and collision always agree.
+    textures.ts   Road, curb, chequer, runoff and barrier textures drawn into
+                  canvases at load time — no image files to fetch.
     input.ts      Keyboard, gamepad and touch collapsed into one Controls struct.
     audio.ts      Synthesised engine and effects — no audio assets.
     storage.ts    Personal bests and preferences in localStorage.
