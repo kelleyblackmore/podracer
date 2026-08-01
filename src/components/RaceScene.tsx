@@ -4,8 +4,26 @@ import * as THREE from 'three';
 import type { CameraMode } from '../types';
 import type { RaceEvent, RaceState, Racer } from '../game/engine';
 import { NEUTRAL_CONTROLS, stepRace } from '../game/engine';
-import { buildTrackMeshes, disposeTrackMeshes, LAYER, WALL_HEIGHT } from '../game/trackMesh';
+import {
+  buildTrackMeshes,
+  disposeTrackMeshes,
+  GROUND_DROP,
+  LAYER,
+  racerHeight,
+  RUNOFF_WIDTH,
+  WALL_HEIGHT,
+  type SceneryInstance,
+} from '../game/trackMesh';
+import {
+  createCheckerTexture,
+  createCurbTexture,
+  createRoadTexture,
+  createRunoffTexture,
+  createWallTexture,
+  disposeTextures,
+} from '../game/textures';
 import type { InputManager } from '../game/input';
+import type { SceneryKind } from '../types';
 
 const PARTICLE_POOL = 220;
 const SKID_POOL = 260;
@@ -24,8 +42,11 @@ interface Particle {
 
 interface Skid {
   x: number;
+  /** Sampled from the banked road surface when the mark is laid down. */
+  y: number;
   z: number;
   angle: number;
+  bank: number;
   life: number;
 }
 
@@ -41,7 +62,7 @@ export interface SceneProps {
 // --- Pod ---------------------------------------------------------------------
 
 /** One pod racer. Every per-frame value is written through refs, never state. */
-function Pod({ racer }: { racer: Racer }) {
+function Pod({ racer, race }: { racer: Racer; race: RaceState }) {
   const group = useRef<THREE.Group>(null);
   const flameLeft = useRef<THREE.Mesh>(null);
   const flameRight = useRef<THREE.Mesh>(null);
@@ -60,16 +81,35 @@ function Pod({ racer }: { racer: Racer }) {
     // Engine vibration scales with speed; smoothed so it reads as thrust, not noise.
     const vibe = Math.sin(performance.now() * 0.05) * speedRatio * 1.2;
 
-    node.position.set(racer.x, 6 + vibe, racer.z);
+    // Sit on the banked, elevated road surface rather than a flat y = 0 plane.
+    const samples = race.geometry.samples;
+    const sample = samples[racer.trackIndex];
+    const surface = racerHeight(sample, racer.lateral);
+    node.position.set(racer.x, surface + 6 + vibe, racer.z);
+
+    // YXZ so heading applies first: X then rolls about the pod's own nose-to-tail
+    // axis and Z pitches it. With the default XYZ order these two swap over and
+    // a banking pod appears to pitch instead.
+    node.rotation.order = 'YXZ';
     node.rotation.y = -racer.angle;
 
-    // Bank into the slide: the angle between where we point and where we go.
+    // Lean into the slide, on top of whatever the road itself is doing.
     const heading = Math.atan2(racer.vz, racer.vx);
     let slip = heading - racer.angle;
     while (slip > Math.PI) slip -= Math.PI * 2;
     while (slip < -Math.PI) slip += Math.PI * 2;
-    node.rotation.z = THREE.MathUtils.lerp(node.rotation.z, slip * 0.5, Math.min(1, delta * 8));
-    node.rotation.x = vibe * 0.02;
+    const targetRoll = sample.bank + slip * 0.35;
+    node.rotation.x = THREE.MathUtils.lerp(node.rotation.x, targetRoll, Math.min(1, delta * 8));
+
+    // Pitch with the gradient of the road under the pod.
+    const ahead = samples[(racer.trackIndex + 1) % samples.length];
+    const behind = samples[(racer.trackIndex - 1 + samples.length) % samples.length];
+    const slope = (ahead.y - behind.y) / (2 * race.geometry.spacing);
+    node.rotation.z = THREE.MathUtils.lerp(
+      node.rotation.z,
+      Math.atan(slope) + vibe * 0.01,
+      Math.min(1, delta * 6),
+    );
 
     const boosting = racer.boostTimer > 0;
     const target = boosting ? 2.4 : racer.drifting ? 1.5 : 0.6 + speedRatio;
@@ -143,69 +183,207 @@ function Pod({ racer }: { racer: Racer }) {
 
 // --- Track -------------------------------------------------------------------
 
-function TrackVisuals({ race }: { race: RaceState }) {
+/** Unit prop geometry per scenery kind: radius 1, height 1, base at y = 0. */
+function sceneryGeometry(kind: SceneryKind): THREE.BufferGeometry {
+  switch (kind) {
+    case 'spire': {
+      const geo = new THREE.ConeGeometry(1, 1, 6);
+      geo.translate(0, 0.5, 0);
+      return geo;
+    }
+    case 'pylon': {
+      const geo = new THREE.BoxGeometry(1.4, 1, 1.4);
+      geo.translate(0, 0.5, 0);
+      return geo;
+    }
+    case 'crystal': {
+      const geo = new THREE.OctahedronGeometry(1, 0);
+      geo.scale(0.7, 1, 0.7);
+      geo.translate(0, 0.5, 0);
+      return geo;
+    }
+    case 'dune': {
+      const geo = new THREE.SphereGeometry(1, 10, 6);
+      geo.scale(1.6, 0.5, 1.6);
+      return geo;
+    }
+    case 'mesa':
+    default: {
+      const geo = new THREE.CylinderGeometry(0.62, 1, 1, 6);
+      geo.translate(0, 0.5, 0);
+      return geo;
+    }
+  }
+}
+
+/** All scenery props share one InstancedMesh — a single draw call for the horizon. */
+function Scenery({ items, kind, color }: { items: SceneryInstance[]; kind: SceneryKind; color: string }) {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const geometry = useMemo(() => sceneryGeometry(kind), [kind]);
+  const base = useMemo(() => new THREE.Color(color), [color]);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useLayoutEffect(() => {
+    const node = mesh.current;
+    if (!node || items.length === 0) return;
+    const tint = new THREE.Color();
+    items.forEach((item, i) => {
+      DUMMY.position.set(item.x, item.y, item.z);
+      DUMMY.rotation.set(0, item.rotation, 0);
+      DUMMY.scale.set(item.scale * 46, item.height, item.scale * 46);
+      DUMMY.updateMatrix();
+      node.setMatrixAt(i, DUMMY.matrix);
+      // Vary brightness so a field of identical props still reads as terrain.
+      tint.copy(base).multiplyScalar(0.62 + item.tint * 0.55);
+      node.setColorAt(i, tint);
+    });
+    node.instanceMatrix.needsUpdate = true;
+    if (node.instanceColor) node.instanceColor.needsUpdate = true;
+  }, [items, base]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <instancedMesh
+      ref={mesh}
+      args={[geometry, undefined, items.length]}
+      castShadow={false}
+      receiveShadow={false}
+      frustumCulled={false}
+    >
+      <meshStandardMaterial roughness={0.95} metalness={0.05} flatShading />
+    </instancedMesh>
+  );
+}
+
+function TrackVisuals({ race, quality }: { race: RaceState; quality: 'low' | 'high' }) {
   const meshes = useMemo(() => buildTrackMeshes(race.geometry), [race.geometry]);
   useEffect(() => () => disposeTrackMeshes(meshes), [meshes]);
 
-  const accent = race.geometry.data.color;
+  const theme = race.geometry.data.theme;
   const trackWidth = race.geometry.data.width;
+  const outer = race.geometry.halfWidth + RUNOFF_WIDTH;
+
+  const textures = useMemo(
+    () => ({
+      road: createRoadTexture(theme.road, '#e2e8f0'),
+      curb: createCurbTexture(theme.curb),
+      runoff: createRunoffTexture(theme.runoff),
+      wall: createWallTexture(theme.wall, theme.accent),
+      checker: createCheckerTexture(),
+    }),
+    [theme],
+  );
+  useEffect(() => () => disposeTextures(Object.values(textures)), [textures]);
 
   return (
     <group>
       <mesh geometry={meshes.road} receiveShadow>
-        <meshStandardMaterial color="#1e293b" roughness={0.85} metalness={0.1} />
-      </mesh>
-      <mesh geometry={meshes.runoffLeft} receiveShadow>
-        <meshStandardMaterial color="#422006" roughness={1} />
-      </mesh>
-      <mesh geometry={meshes.runoffRight} receiveShadow>
-        <meshStandardMaterial color="#422006" roughness={1} />
-      </mesh>
-      <mesh geometry={meshes.edgeLeft}>
-        <meshBasicMaterial color={accent} toneMapped={false} />
-      </mesh>
-      <mesh geometry={meshes.edgeRight}>
-        <meshBasicMaterial color={accent} toneMapped={false} />
-      </mesh>
-      <mesh geometry={meshes.wallLeft}>
-        <meshStandardMaterial color="#334155" side={THREE.DoubleSide} roughness={0.8} />
-      </mesh>
-      <mesh geometry={meshes.wallRight}>
-        <meshStandardMaterial color="#334155" side={THREE.DoubleSide} roughness={0.8} />
+        <meshStandardMaterial map={textures.road} roughness={0.82} metalness={0.12} />
       </mesh>
 
-      {/* Start / finish gate */}
+      <mesh geometry={meshes.runoffLeft} receiveShadow>
+        <meshStandardMaterial map={textures.runoff} roughness={1} />
+      </mesh>
+      <mesh geometry={meshes.runoffRight} receiveShadow>
+        <meshStandardMaterial map={textures.runoff} roughness={1} />
+      </mesh>
+
+      <mesh geometry={meshes.curbLeft}>
+        <meshStandardMaterial map={textures.curb} roughness={0.6} />
+      </mesh>
+      <mesh geometry={meshes.curbRight}>
+        <meshStandardMaterial map={textures.curb} roughness={0.6} />
+      </mesh>
+
+      <mesh geometry={meshes.wallLeft}>
+        <meshStandardMaterial map={textures.wall} side={THREE.DoubleSide} roughness={0.85} />
+      </mesh>
+      <mesh geometry={meshes.wallRight}>
+        <meshStandardMaterial map={textures.wall} side={THREE.DoubleSide} roughness={0.85} />
+      </mesh>
+
+      {/* Emissive rail capping each barrier — the strongest read of the track's
+          shape from a distance, and what makes a corner legible at speed. */}
+      <mesh geometry={meshes.railLeft}>
+        <meshBasicMaterial color={theme.accent} toneMapped={false} />
+      </mesh>
+      <mesh geometry={meshes.railRight}>
+        <meshBasicMaterial color={theme.accent} toneMapped={false} />
+      </mesh>
+
+      <mesh geometry={meshes.startLine}>
+        <meshBasicMaterial map={textures.checker} toneMapped={false} />
+      </mesh>
+
+      {/* Start / finish gantry */}
       <group
-        position={[meshes.startLine.x, 0, meshes.startLine.z]}
-        rotation={[0, -meshes.startLine.angle, 0]}
+        position={[meshes.gantry.x, meshes.gantry.y, meshes.gantry.z]}
+        rotation={[0, -meshes.gantry.angle, 0]}
       >
-        <mesh position={[0, LAYER.startLine, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[18, trackWidth]} />
-          <meshBasicMaterial color="#f8fafc" transparent opacity={0.75} />
-        </mesh>
         {[-1, 1].map((side) => (
-          <mesh key={side} position={[0, 45, side * (trackWidth / 2 + 30)]}>
-            <boxGeometry args={[14, 90, 14]} />
-            <meshStandardMaterial color="#334155" />
+          <mesh key={side} position={[0, 48, side * (trackWidth / 2 + 34)]} castShadow>
+            <boxGeometry args={[16, 96, 16]} />
+            <meshStandardMaterial color={theme.wall} roughness={0.7} metalness={0.3} />
           </mesh>
         ))}
-        <mesh position={[0, 92, 0]}>
-          <boxGeometry args={[16, 8, trackWidth + 74]} />
-          <meshBasicMaterial color={accent} toneMapped={false} />
+        <mesh position={[0, 100, 0]}>
+          <boxGeometry args={[18, 14, trackWidth + 82]} />
+          <meshStandardMaterial color={theme.wall} roughness={0.6} metalness={0.4} />
         </mesh>
+        <mesh position={[0, 92, 0]}>
+          <boxGeometry args={[20, 4, trackWidth + 78]} />
+          <meshBasicMaterial color={theme.accent} toneMapped={false} />
+        </mesh>
+
+        {/* Grandstands flanking the straight */}
+        {[-1, 1].map((side) =>
+          [0, 1, 2].map((tier) => (
+            <mesh
+              key={`${side}-${tier}`}
+              position={[
+                -120 - tier * 4,
+                14 + tier * 22,
+                side * (outer + 60 + tier * 26),
+              ]}
+            >
+              <boxGeometry args={[520, 22, 46]} />
+              <meshStandardMaterial
+                color={tier % 2 === 0 ? theme.wall : theme.sceneryColor}
+                roughness={0.9}
+              />
+            </mesh>
+          )),
+        )}
       </group>
 
       {/* Marker posts along both barriers */}
       {meshes.posts.map((post, i) => (
-        <group key={i} position={[post.x, 0, post.z]} rotation={[0, -post.angle, 0]}>
+        <group key={i} position={[post.x, post.y, post.z]} rotation={[0, -post.angle, 0]}>
           {[-1, 1].map((side) => (
-            <mesh key={side} position={[0, WALL_HEIGHT + 14, side * (trackWidth / 2 + 55)]}>
-              <boxGeometry args={[4, 28, 4]} />
-              <meshBasicMaterial color={accent} toneMapped={false} />
+            <mesh key={side} position={[0, WALL_HEIGHT + 16, side * (outer + 6)]}>
+              <boxGeometry args={[5, 32, 5]} />
+              <meshBasicMaterial color={theme.accent} toneMapped={false} />
             </mesh>
           ))}
         </group>
       ))}
+
+      {quality === 'high' && (
+        <Scenery items={meshes.scenery} kind={theme.scenery} color={theme.sceneryColor} />
+      )}
+
+      {/* Ground sits below the lowest point of the circuit so an elevated
+          track never sinks into it. */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, meshes.minHeight - GROUND_DROP, 0]} receiveShadow>
+        <planeGeometry args={[60000, 60000]} />
+        <meshStandardMaterial color={theme.ground} roughness={1} />
+      </mesh>
+      <gridHelper
+        args={[60000, 200, theme.wall, theme.ground]}
+        position={[0, meshes.minHeight - GROUND_DROP + 1, 0]}
+      />
     </group>
   );
 }
@@ -243,7 +421,7 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
     [particleCount],
   );
   const skidPool = useMemo<Skid[]>(
-    () => Array.from({ length: skidCount }, () => ({ x: 0, z: 0, angle: 0, life: 0 })),
+    () => Array.from({ length: skidCount }, () => ({ x: 0, y: 0, z: 0, angle: 0, bank: 0, life: 0 })),
     [skidCount],
   );
 
@@ -278,12 +456,17 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
     for (const racer of race.racers) {
       if (!racer.drifting || Math.abs(racer.speed) < racer.config.topSpeed * 0.35) continue;
 
+      const sample = race.geometry.samples[racer.trackIndex];
+      const surface = racerHeight(sample, racer.lateral);
+
       if (emitSkid) {
         const skid = skidPool[nextSkid.current];
         nextSkid.current = (nextSkid.current + 1) % skidPool.length;
         skid.x = racer.x;
+        skid.y = surface;
         skid.z = racer.z;
         skid.angle = racer.angle;
+        skid.bank = sample.bank;
         skid.life = 1;
       }
 
@@ -294,7 +477,7 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
         const particle = particles[nextParticle.current];
         nextParticle.current = (nextParticle.current + 1) % particles.length;
         particle.x = racer.x + (Math.random() - 0.5) * 26;
-        particle.y = 4 + Math.random() * 4;
+        particle.y = surface + 4 + Math.random() * 4;
         particle.z = racer.z + (Math.random() - 0.5) * 26;
         particle.vx = -Math.cos(racer.angle) * racer.speed * 48 + (Math.random() - 0.5) * 60;
         particle.vy = 30 + Math.random() * 70;
@@ -338,7 +521,7 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
         const skid = skidPool[i];
         if (skid.life > 0) {
           skid.life -= delta * 0.32;
-          DUMMY.position.set(skid.x, LAYER.skid, skid.z);
+          DUMMY.position.set(skid.x, skid.y + LAYER.skid * Math.cos(skid.bank), skid.z);
           DUMMY.rotation.set(-Math.PI / 2, 0, -skid.angle);
           DUMMY.scale.set(1, 1, 1);
           // No per-instance opacity without a custom shader, so fade the mark
@@ -417,21 +600,28 @@ function Simulation({ race, input, cameraMode, paused, onFrame }: Omit<SceneProp
     const player = race.player;
     const speedRatio = Math.min(1, Math.abs(player.speed) / player.config.topSpeed);
 
+    // Everything below is offset by the height of the road under the pod, so
+    // the camera climbs and drops with an elevated circuit.
+    const samples = race.geometry.samples;
+    const surface = racerHeight(samples[player.trackIndex], player.lateral);
+    // Look-ahead height keeps a crest from hiding the road beyond it.
+    const aheadSample = samples[(player.trackIndex + 24) % samples.length];
+
     let desired: THREE.Vector3;
     let target: THREE.Vector3;
 
     if (cameraMode === 'TOPDOWN') {
-      desired = new THREE.Vector3(player.x, 900, player.z + 260);
-      target = new THREE.Vector3(player.x, 0, player.z);
+      desired = new THREE.Vector3(player.x, surface + 900, player.z + 260);
+      target = new THREE.Vector3(player.x, surface, player.z);
     } else if (cameraMode === 'COCKPIT') {
       desired = new THREE.Vector3(
         player.x - Math.cos(player.angle) * 6,
-        20,
+        surface + 14,
         player.z - Math.sin(player.angle) * 6,
       );
       target = new THREE.Vector3(
         player.x + Math.cos(player.angle) * 400,
-        14,
+        aheadSample.y + 14,
         player.z + Math.sin(player.angle) * 400,
       );
     } else {
@@ -440,12 +630,12 @@ function Simulation({ race, input, cameraMode, paused, onFrame }: Omit<SceneProp
       const height = 62 + speedRatio * 14;
       desired = new THREE.Vector3(
         player.x - Math.cos(player.angle) * distance,
-        height,
+        surface + height,
         player.z - Math.sin(player.angle) * distance,
       );
       target = new THREE.Vector3(
         player.x + Math.cos(player.angle) * 220,
-        18,
+        aheadSample.y + 18,
         player.z + Math.sin(player.angle) * 220,
       );
     }
@@ -478,23 +668,25 @@ function Simulation({ race, input, cameraMode, paused, onFrame }: Omit<SceneProp
 // --- Canvas ------------------------------------------------------------------
 
 export function RaceScene({ race, input, cameraMode, quality, paused, onFrame }: SceneProps) {
-  const accent = race.geometry.data.color;
+  const theme = race.geometry.data.theme;
+  const stars = quality === 'high' ? theme.starCount : Math.round(theme.starCount * 0.35);
 
   return (
     <Canvas
       shadows={quality === 'high'}
       dpr={quality === 'high' ? [1, 1.75] : 1}
       gl={{ antialias: quality === 'high', powerPreference: 'high-performance' }}
-      camera={{ position: [0, 400, 400], fov: 62, near: 1, far: 20000 }}
+      camera={{ position: [0, 400, 400], fov: 62, near: 1, far: 30000 }}
     >
-      <color attach="background" args={['#050914']} />
-      <fog attach="fog" args={['#050914', 900, 6000]} />
+      <color attach="background" args={[theme.sky]} />
+      <fog attach="fog" args={[theme.sky, theme.fogNear, theme.fogFar]} />
 
-      <ambientLight intensity={0.35} />
-      <hemisphereLight intensity={0.5} color="#93c5fd" groundColor="#1c1917" />
+      <ambientLight intensity={0.34} />
+      <hemisphereLight intensity={0.55} color={theme.light} groundColor={theme.ground} />
       <directionalLight
         position={[600, 900, 300]}
-        intensity={1.4}
+        intensity={1.35}
+        color={theme.light}
         castShadow={quality === 'high'}
         shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-1500}
@@ -503,20 +695,16 @@ export function RaceScene({ race, input, cameraMode, quality, paused, onFrame }:
         shadow-camera-bottom={-1500}
         shadow-camera-far={4000}
       />
-      <pointLight position={[0, 400, 0]} intensity={0.6} color={accent} distance={6000} />
+      {/* Low fill in the circuit's accent colour, so the neon rails bleed into
+          the scene instead of floating on top of it. */}
+      <pointLight position={[0, 500, 0]} intensity={0.7} color={theme.accent} distance={9000} />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -8, 0]} receiveShadow>
-        <planeGeometry args={[40000, 40000]} />
-        <meshStandardMaterial color="#0b1220" roughness={1} />
-      </mesh>
-      <gridHelper args={[40000, 160, '#1e293b', '#131c2e']} position={[0, -7, 0]} />
-
-      <TrackVisuals race={race} />
+      <TrackVisuals race={race} quality={quality} />
       {race.racers.map((racer) => (
-        <Pod key={racer.id} racer={racer} />
+        <Pod key={racer.id} racer={racer} race={race} />
       ))}
       <Effects race={race} quality={quality} />
-      <Starfield count={quality === 'high' ? 1400 : 500} />
+      <Starfield count={stars} />
 
       <Simulation
         race={race}

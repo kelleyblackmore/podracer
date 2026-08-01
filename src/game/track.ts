@@ -20,6 +20,13 @@ export interface TrackSample {
   curvature: number;
   /** Physics speed cap for this sample, in units/tick (see engine.ts). */
   speedLimit: number;
+  /** Centre-line height. Purely visual — the physics runs in the XZ plane. */
+  y: number;
+  /**
+   * Roll of the road cross-section, in radians. Positive lifts the outside of a
+   * positive-curvature corner. Also purely visual.
+   */
+  bank: number;
 }
 
 export interface TrackGeometry {
@@ -115,6 +122,8 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
       s: i * spacing,
       curvature: 0,
       speedLimit: Infinity,
+      y: 0,
+      bank: 0,
     });
   }
 
@@ -129,8 +138,69 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
   }
 
   buildSpeedProfile(samples, spacing);
+  buildElevationAndBanking(samples, data, length);
 
   return { samples, length, spacing, halfWidth: data.width / 2, curve, data };
+}
+
+/** Peak roll of a banked corner, in radians (~16°). */
+const MAX_BANK = 0.28;
+const BANK_GAIN = 115;
+
+/**
+ * Height and cross-section roll. Both are cosmetic: the simulation stays in the
+ * XZ plane, so adding elevation to a circuit can never change how it drives.
+ */
+function buildElevationAndBanking(
+  samples: TrackSample[],
+  data: TrackData,
+  length: number,
+): void {
+  const profile = data.elevation;
+  if (profile) {
+    const phase = profile.phase ?? 0;
+    // `waves` is a whole number, so the height closes seamlessly at the line.
+    const waves = Math.max(1, Math.round(profile.waves));
+    for (const sample of samples) {
+      sample.y = profile.amplitude * Math.sin((sample.s / length) * Math.PI * 2 * waves + phase);
+    }
+  }
+
+  const bankScale = data.banking ?? 0;
+  if (bankScale > 0) {
+    for (const sample of samples) {
+      const raw = sample.curvature * BANK_GAIN * bankScale;
+      sample.bank = Math.max(-MAX_BANK, Math.min(MAX_BANK, raw));
+    }
+    // Smooth so banking eases in and out rather than snapping at corner entry.
+    smoothRing(samples, 10, (s) => s.bank, (s, v) => (s.bank = v));
+  }
+}
+
+/** In-place circular moving average over ±`radius` samples. */
+function smoothRing(
+  samples: TrackSample[],
+  radius: number,
+  get: (s: TrackSample) => number,
+  set: (s: TrackSample, value: number) => void,
+): void {
+  const count = samples.length;
+  const source = samples.map(get);
+  for (let i = 0; i < count; i++) {
+    let total = 0;
+    for (let offset = -radius; offset <= radius; offset++) {
+      total += source[(((i + offset) % count) + count) % count];
+    }
+    set(samples[i], total / (radius * 2 + 1));
+  }
+}
+
+/**
+ * Height of the driving surface `lateral` units off the centre line, accounting
+ * for banking. Used to sit pods and the camera on the road.
+ */
+export function surfaceHeight(sample: TrackSample, lateral: number): number {
+  return sample.y - lateral * Math.sin(sample.bank);
 }
 
 /**
@@ -233,4 +303,20 @@ export function arcDelta(geometry: TrackGeometry, from: number, to: number): num
 /** World position `lateral` units off the centre line at sample `index`. */
 export function offsetPoint(sample: TrackSample, lateral: number): { x: number; z: number } {
   return { x: sample.x + sample.nx * lateral, z: sample.z + sample.nz * lateral };
+}
+
+/**
+ * Same, but on the banked surface. The horizontal footprint deliberately
+ * ignores the `cos(bank)` foreshortening so the visible road is never narrower
+ * than the region the physics treats as track.
+ */
+export function offsetPoint3(
+  sample: TrackSample,
+  lateral: number,
+): { x: number; y: number; z: number } {
+  return {
+    x: sample.x + sample.nx * lateral,
+    y: surfaceHeight(sample, lateral),
+    z: sample.z + sample.nz * lateral,
+  };
 }
