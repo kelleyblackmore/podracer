@@ -66,6 +66,9 @@ const EMPTY_SNAPSHOT: HudSnapshot = {
   driftCharge: 0,
   boosting: false,
   offTrack: false,
+  airborne: false,
+  airTime: 0,
+  slipstream: 0,
   gapAhead: null,
   standings: [],
 };
@@ -268,6 +271,15 @@ export function Race({
           case 'collision':
             if (event.racerId === player.id) audio.collision(event.force);
             break;
+          case 'contact':
+            if (event.racerId === player.id) audio.contact(event.force);
+            break;
+          case 'takeoff':
+            if (event.racerId === player.id) audio.takeoff();
+            break;
+          case 'land':
+            if (event.racerId === player.id) audio.land(event.force);
+            break;
           case 'boost':
             if (event.racerId === player.id) audio.boost(event.strength);
             break;
@@ -284,11 +296,38 @@ export function Race({
         }
       }
 
+      // Slide angle drives the tyre scrub, so a pod running wide sounds like
+      // it even when the player is not holding the drift button.
+      const heading = Math.atan2(player.vz, player.vx);
+      let slipAngle = heading - player.angle;
+      while (slipAngle > Math.PI) slipAngle -= Math.PI * 2;
+      while (slipAngle < -Math.PI) slipAngle += Math.PI * 2;
+      const playerSpeedRatio = Math.min(1, Math.abs(player.speed) / player.config.topSpeed);
+
       audio.updateEngine(
-        Math.min(1, Math.abs(player.speed) / player.config.topSpeed),
+        playerSpeedRatio,
         player.boostTimer > 0,
         player.offTrack,
+        Math.min(1, Math.abs(slipAngle) / 0.5),
+        player.airborne,
       );
+
+      // Rivals are pitched by their own speed, gained by distance and panned by
+      // which side of you they are on.
+      for (const rival of state.racers) {
+        if (rival.isPlayer) continue;
+        const dx = rival.x - player.x;
+        const dz = rival.z - player.z;
+        const distance = Math.hypot(dx, dz);
+        const right = -dx * Math.sin(player.angle) + dz * Math.cos(player.angle);
+        audio.updateRival(
+          rival.id,
+          Math.min(1, Math.abs(rival.speed) / rival.config.topSpeed),
+          distance,
+          distance > 1 ? right / Math.max(distance, 1) : 0,
+          rival.boostTimer > 0,
+        );
+      }
 
       if (state.phase === 'FINISHED') {
         if (finishTimer.current === null) {
@@ -326,6 +365,9 @@ export function Race({
         driftCharge: player.driftCharge,
         boosting: player.boostTimer > 0,
         offTrack: player.offTrack,
+        airborne: player.airborne,
+        airTime: player.airTime,
+        slipstream: player.slipstream,
         gapAhead,
         standings: [...state.racers]
           .sort((a, b) => a.position - b.position)
@@ -377,6 +419,10 @@ export function Race({
             drifting: racer.drifting,
             driftCharge: Number(racer.driftCharge.toFixed(1)),
             boostTimer: Number(racer.boostTimer.toFixed(2)),
+            airborne: racer.airborne,
+            hop: Number(racer.hop.toFixed(1)),
+            airTime: Number(racer.airTime.toFixed(2)),
+            slipstream: Number(racer.slipstream.toFixed(2)),
             lateral: Number(racer.lateral.toFixed(1)),
             offTrack: racer.offTrack,
             finished: racer.finished,

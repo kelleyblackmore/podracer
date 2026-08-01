@@ -12,7 +12,7 @@ import {
   racerHeight,
   RUNOFF_WIDTH,
   WALL_HEIGHT,
-  type SceneryInstance,
+  type SceneryBatch,
 } from '../game/trackMesh';
 import {
   createCheckerTexture,
@@ -86,7 +86,7 @@ function Pod({ racer, race }: { racer: Racer; race: RaceState }) {
     const samples = race.geometry.samples;
     const sample = samples[racer.trackIndex];
     const surface = racerHeight(sample, racer.lateral);
-    node.position.set(racer.x, surface + 6 + vibe, racer.z);
+    node.position.set(racer.x, surface + racer.hop + 6 + vibe, racer.z);
 
     // YXZ so heading applies first: X then rolls about the pod's own nose-to-tail
     // axis and Z pitches it. With the default XYZ order these two swap over and
@@ -105,10 +105,14 @@ function Pod({ racer, race }: { racer: Racer; race: RaceState }) {
     // Pitch with the gradient of the road under the pod.
     const ahead = samples[(racer.trackIndex + 1) % samples.length];
     const behind = samples[(racer.trackIndex - 1 + samples.length) % samples.length];
+    // Grounded pods follow the road's gradient; airborne ones follow their arc.
     const slope = (ahead.y - behind.y) / (2 * race.geometry.spacing);
+    const pitch = racer.airborne
+      ? Math.atan2(racer.vy, Math.max(60, Math.abs(racer.speed) * 60))
+      : Math.atan(slope);
     node.rotation.z = THREE.MathUtils.lerp(
       node.rotation.z,
-      Math.atan(slope) + vibe * 0.01,
+      pitch + vibe * 0.01,
       Math.min(1, delta * 6),
     );
 
@@ -186,75 +190,145 @@ function Pod({ racer, race }: { racer: Racer; race: RaceState }) {
 
 /** Unit prop geometry per scenery kind: radius 1, height 1, base at y = 0. */
 function sceneryGeometry(kind: SceneryKind): THREE.BufferGeometry {
+  const grounded = (geo: THREE.BufferGeometry) => {
+    geo.translate(0, 0.5, 0);
+    return geo;
+  };
+
   switch (kind) {
-    case 'spire': {
-      const geo = new THREE.ConeGeometry(1, 1, 6);
-      geo.translate(0, 0.5, 0);
-      return geo;
-    }
-    case 'pylon': {
-      const geo = new THREE.BoxGeometry(1.4, 1, 1.4);
-      geo.translate(0, 0.5, 0);
-      return geo;
-    }
+    case 'spire':
+      return grounded(new THREE.ConeGeometry(1, 1, 6));
+    case 'stalagmite':
+      return grounded(new THREE.ConeGeometry(0.8, 1, 5));
+    case 'pylon':
+      return grounded(new THREE.BoxGeometry(1.4, 1, 1.4));
+    case 'tower':
+      return grounded(new THREE.BoxGeometry(1, 1, 1));
     case 'crystal': {
       const geo = new THREE.OctahedronGeometry(1, 0);
       geo.scale(0.7, 1, 0.7);
-      geo.translate(0, 0.5, 0);
-      return geo;
+      return grounded(geo);
     }
     case 'dune': {
       const geo = new THREE.SphereGeometry(1, 10, 6);
       geo.scale(1.6, 0.5, 1.6);
       return geo;
     }
-    case 'mesa':
-    default: {
-      const geo = new THREE.CylinderGeometry(0.62, 1, 1, 6);
-      geo.translate(0, 0.5, 0);
+    case 'boulder': {
+      // Low-poly lump; flat shading makes each face read as a rock facet.
+      const geo = new THREE.DodecahedronGeometry(1, 0);
+      geo.scale(1, 0.75, 1);
+      return grounded(geo);
+    }
+    case 'arch': {
+      // Half-torus standing on its ends, spanning 2 units.
+      const geo = new THREE.TorusGeometry(1, 0.17, 5, 12, Math.PI);
+      geo.rotateY(Math.PI / 2);
       return geo;
     }
+    case 'vaporator':
+      return grounded(new THREE.CylinderGeometry(0.28, 0.42, 1, 6));
+    case 'tree':
+      // Broad canopy — a jungle silhouette rather than a detailed tree. Much
+      // narrower than this and a forest reads as a field of spikes.
+      return grounded(new THREE.ConeGeometry(0.68, 1, 7));
+    case 'wreck': {
+      const geo = new THREE.BoxGeometry(1.9, 1, 0.9);
+      geo.rotateZ(0.28);
+      return grounded(geo);
+    }
+    case 'mesa':
+    default:
+      return grounded(new THREE.CylinderGeometry(0.62, 1, 1, 6));
   }
 }
 
-/** All scenery props share one InstancedMesh — a single draw call for the horizon. */
-function Scenery({ items, kind, color }: { items: SceneryInstance[]; kind: SceneryKind; color: string }) {
+/** One InstancedMesh per layer — the whole horizon costs a handful of draw calls. */
+function Scenery({ batch }: { batch: SceneryBatch }) {
   const mesh = useRef<THREE.InstancedMesh>(null);
-  const geometry = useMemo(() => sceneryGeometry(kind), [kind]);
-  const base = useMemo(() => new THREE.Color(color), [color]);
+  const geometry = useMemo(() => sceneryGeometry(batch.kind), [batch.kind]);
+  const base = useMemo(() => new THREE.Color(batch.color), [batch.color]);
 
   useEffect(() => () => geometry.dispose(), [geometry]);
 
   useLayoutEffect(() => {
     const node = mesh.current;
-    if (!node || items.length === 0) return;
+    if (!node || batch.items.length === 0) return;
     const tint = new THREE.Color();
-    items.forEach((item, i) => {
+    batch.items.forEach((item, i) => {
       DUMMY.position.set(item.x, item.y, item.z);
       DUMMY.rotation.set(0, item.rotation, 0);
       DUMMY.scale.set(item.scale * 46, item.height, item.scale * 46);
       DUMMY.updateMatrix();
       node.setMatrixAt(i, DUMMY.matrix);
       // Vary brightness so a field of identical props still reads as terrain.
-      tint.copy(base).multiplyScalar(0.62 + item.tint * 0.55);
+      tint.copy(base).multiplyScalar(0.6 + item.tint * 0.6);
       node.setColorAt(i, tint);
     });
     node.instanceMatrix.needsUpdate = true;
     if (node.instanceColor) node.instanceColor.needsUpdate = true;
-  }, [items, base]);
+  }, [batch, base]);
 
-  if (items.length === 0) return null;
+  if (batch.items.length === 0) return null;
 
   return (
     <instancedMesh
       ref={mesh}
-      args={[geometry, undefined, items.length]}
-      castShadow={false}
-      receiveShadow={false}
+      args={[geometry, undefined, batch.items.length]}
       frustumCulled={false}
     >
-      <meshStandardMaterial roughness={0.95} metalness={0.05} flatShading />
+      {batch.glow ? (
+        <meshBasicMaterial toneMapped={false} />
+      ) : (
+        <meshStandardMaterial roughness={0.95} metalness={0.05} flatShading />
+      )}
     </instancedMesh>
+  );
+}
+
+/** Two low suns on the horizon — the single strongest cue that this is Tatooine. */
+function Suns({ colors, distance }: { colors: string[]; distance: number }) {
+  return (
+    <group>
+      {colors.map((color, i) => (
+        <mesh
+          key={color + i}
+          position={[
+            Math.cos(0.7 + i * 0.22) * distance,
+            340 + i * 130,
+            Math.sin(0.7 + i * 0.22) * distance,
+          ]}
+        >
+          <sphereGeometry args={[i === 0 ? 210 : 130, 20, 16]} />
+          <meshBasicMaterial color={color} toneMapped={false} fog={false} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/** Coruscant traffic lanes: emissive streaks threading the skyline. */
+function SkyLanes({ color }: { color: string }) {
+  const lanes = useMemo(
+    () =>
+      Array.from({ length: 14 }, (_, i) => ({
+        y: 500 + ((i * 197) % 1500),
+        z: -3000 + ((i * 733) % 6000),
+        length: 4000 + ((i * 311) % 3000),
+        rotation: ((i * 47) % 360) * (Math.PI / 180),
+      })),
+    [],
+  );
+
+  return (
+    <group>
+      {lanes.map((lane, i) => (
+        <mesh key={i} position={[0, lane.y, lane.z]} rotation={[0, lane.rotation, 0]}>
+          <boxGeometry args={[lane.length, 3, 3]} />
+          <meshBasicMaterial color={color} toneMapped={false} transparent opacity={0.5} />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -351,7 +425,7 @@ function TrackVisuals({ race, quality }: { race: RaceState; quality: 'low' | 'hi
             >
               <boxGeometry args={[520, 22, 46]} />
               <meshStandardMaterial
-                color={tier % 2 === 0 ? theme.wall : theme.sceneryColor}
+                color={tier % 2 === 0 ? theme.wall : (theme.layers[0]?.color ?? theme.wall)}
                 roughness={0.9}
               />
             </mesh>
@@ -371,9 +445,22 @@ function TrackVisuals({ race, quality }: { race: RaceState; quality: 'low' | 'hi
         </group>
       ))}
 
-      {quality === 'high' && (
-        <Scenery items={meshes.scenery} kind={theme.scenery} color={theme.sceneryColor} />
+      {meshes.rampFlanks && (
+        <mesh geometry={meshes.rampFlanks}>
+          <meshStandardMaterial color={theme.wall} side={THREE.DoubleSide} roughness={0.8} />
+        </mesh>
       )}
+
+      {/* The far layer is the expensive one, so Fast quality keeps only the
+          near and mid bands that actually frame the track. */}
+      {meshes.scenery
+        .slice(0, quality === 'high' ? undefined : Math.max(2, meshes.scenery.length - 1))
+        .map((batch, i) => (
+          <Scenery key={i} batch={batch} />
+        ))}
+
+      {theme.suns && <Suns colors={theme.suns} distance={Math.min(theme.fogFar * 0.86, 9000)} />}
+      {theme.skyLanes && quality === 'high' && <SkyLanes color={theme.accent} />}
 
       {/* Ground sits below the lowest point of the circuit so an elevated
           track never sinks into it. */}
@@ -454,7 +541,48 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
     const emitSkid = skidTimer.current > 0.03;
     if (emitSkid) skidTimer.current = 0;
 
+    // Effects mounts before Simulation, so these are last frame's events —
+    // one frame of latency, and no extra plumbing to get them here.
+    for (const event of race.events) {
+      if (event.type === 'land') {
+        const racer = race.racers.find((r) => r.id === event.racerId);
+        if (!racer) continue;
+        const surface = racerHeight(race.geometry.samples[racer.trackIndex], racer.lateral);
+        const puff = quality === 'high' ? 14 : 6;
+        for (let i = 0; i < puff; i++) {
+          const particle = particles[nextParticle.current];
+          nextParticle.current = (nextParticle.current + 1) % particles.length;
+          particle.x = racer.x + (Math.random() - 0.5) * 46;
+          particle.y = surface + 2 + Math.random() * 6;
+          particle.z = racer.z + (Math.random() - 0.5) * 46;
+          particle.vx = (Math.random() - 0.5) * 190;
+          particle.vy = 40 + Math.random() * 130 * (0.4 + event.force);
+          particle.vz = (Math.random() - 0.5) * 190;
+          particle.maxLife = 0.5 + Math.random() * 0.4;
+          particle.life = particle.maxLife;
+          particle.color.set('#d6c3a1');
+        }
+      } else if (event.type === 'contact') {
+        const burst = quality === 'high' ? 10 : 4;
+        for (let i = 0; i < burst; i++) {
+          const particle = particles[nextParticle.current];
+          nextParticle.current = (nextParticle.current + 1) % particles.length;
+          particle.x = event.x + (Math.random() - 0.5) * 14;
+          particle.y = 10 + Math.random() * 10;
+          particle.z = event.z + (Math.random() - 0.5) * 14;
+          particle.vx = (Math.random() - 0.5) * 320;
+          particle.vy = 60 + Math.random() * 160;
+          particle.vz = (Math.random() - 0.5) * 320;
+          particle.maxLife = 0.22 + Math.random() * 0.25;
+          particle.life = particle.maxLife;
+          particle.color.set('#fde68a');
+        }
+      }
+    }
+
     for (const racer of race.racers) {
+      // No tyre smoke with no tyres on the ground.
+      if (racer.airborne) continue;
       if (!racer.drifting || Math.abs(racer.speed) < racer.config.topSpeed * 0.35) continue;
 
       const sample = race.geometry.samples[racer.trackIndex];

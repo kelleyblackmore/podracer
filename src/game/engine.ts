@@ -43,6 +43,19 @@ export interface Racer {
   /** Counts down while the racer is recovering from a barrier hit. */
   stunTimer: number;
 
+  /** Height above the road surface. 0 while grounded. */
+  hop: number;
+  /** Vertical velocity, units/second. */
+  vy: number;
+  airborne: boolean;
+  /** Seconds of airtime on the current jump — drives the HUD and scoring. */
+  airTime: number;
+
+  /** 0..1 strength of the tow from the pod ahead. */
+  slipstream: number;
+  /** Signed yaw rate imparted by contact, radians/second. Decays. */
+  spin: number;
+
   trackIndex: number;
   s: number;
   lateral: number;
@@ -83,6 +96,9 @@ export interface Racer {
 
 export type RaceEvent =
   | { type: 'collision'; racerId: string; force: number }
+  | { type: 'contact'; racerId: string; otherId: string; force: number; x: number; z: number }
+  | { type: 'takeoff'; racerId: string; speed: number }
+  | { type: 'land'; racerId: string; force: number; airTime: number }
   | { type: 'boost'; racerId: string; strength: number }
   | { type: 'lap'; racerId: string; lap: number; time: number; isBest: boolean }
   | { type: 'finish'; racerId: string; position: number }
@@ -119,6 +135,28 @@ const COUNTDOWN_SECONDS = 3.4;
 /** Grip beyond the racing surface before the barrier. */
 const RUNOFF = 55;
 const RACER_RADIUS = 26;
+/** Downward acceleration while airborne, units/s². Tuned for ~1s jumps. */
+const GRAVITY = 460;
+/**
+ * How high a jump goes, as a multiple of the ramp's lip height. Scales from the
+ * low figure at the minimum take-off speed to the high one at full pace, so
+ * arriving faster genuinely means flying further.
+ */
+const LAUNCH_PEAK_MIN = 1.1;
+const LAUNCH_PEAK_MAX = 3.2;
+/** Below this fraction of top speed a pod just drives off the lip. */
+const LAUNCH_MIN_SPEED = 0.35;
+/** Steering authority retained in the air — repulsors have little to push on. */
+const AIR_STEER = 0.28;
+/** Restitution for pod-to-pod contact. */
+const CONTACT_RESTITUTION = 0.32;
+/** Fraction of tangential relative velocity scrubbed off on contact. */
+const CONTACT_FRICTION = 0.18;
+/** Slipstream reach and cone. */
+const SLIP_RANGE = 260;
+const SLIP_MAX_LATERAL = 55;
+/** Top-speed multiplier at full tow. */
+const SLIP_BONUS = 0.14;
 const BOOST_TOP_SPEED_MULT = 1.5;
 const BOOST_ACCEL_MULT = 2;
 const DRIFT_ALIGN = 0.028;
@@ -177,6 +215,12 @@ function makeRacer(
     driftCharge: 0,
     boostTimer: 0,
     stunTimer: 0,
+    hop: 0,
+    vy: 0,
+    airborne: false,
+    airTime: 0,
+    slipstream: 0,
+    spin: 0,
     trackIndex: 0,
     s: 0,
     lateral: 0,
@@ -300,6 +344,7 @@ export function stepRace(state: RaceState, dt: number, playerControls: Controls)
   }
 
   resolveRacerCollisions(state);
+  updateSlipstream(state);
   updateStandings(state);
 
   return state.events;
@@ -330,8 +375,8 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
   }
 
   // --- Longitudinal ---
-  let topSpeed = config.topSpeed;
-  let acceleration = config.acceleration;
+  let topSpeed = config.topSpeed * (1 + racer.slipstream * SLIP_BONUS);
+  let acceleration = config.acceleration * (1 + racer.slipstream * SLIP_BONUS * 2);
   if (racer.boostTimer > 0) {
     racer.boostTimer = Math.max(0, racer.boostTimer - dt);
     topSpeed *= BOOST_TOP_SPEED_MULT;
@@ -363,7 +408,16 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
   // into a barrier has its speed scrubbed below the steering threshold and can
   // never turn back out — a permanent beaching for the player and the AI alike.
   const steerSign = Math.abs(racer.speed) > 0.1 ? Math.sign(racer.speed) : 1;
-  racer.angle += controls.steer * turnRate * tickScale * steerSign;
+  // Repulsorlifts have nothing to push against in mid-air.
+  const authority = racer.airborne ? AIR_STEER : 1;
+  racer.angle += controls.steer * turnRate * tickScale * steerSign * authority;
+
+  // Contact knocks the nose off line, then bleeds away.
+  if (racer.spin !== 0) {
+    racer.angle += racer.spin * dt;
+    racer.spin *= Math.pow(0.02, dt);
+    if (Math.abs(racer.spin) < 1e-3) racer.spin = 0;
+  }
 
   // --- Lateral grip: velocity chases the heading, slower while drifting ---
   const alignPerTick = racer.drifting ? DRIFT_ALIGN : config.handling;
@@ -381,12 +435,51 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
   racer.trackIndex = loc.index;
   racer.lateral = loc.lateral;
 
+  // --- Vertical: ramps, flight and landing ---
+  const sample = geometry.samples[loc.index];
+  if (racer.airborne) {
+    racer.airTime += dt;
+    racer.vy -= GRAVITY * dt;
+    racer.hop += racer.vy * dt;
+    if (racer.hop <= 0) {
+      const impact = Math.abs(racer.vy);
+      racer.hop = 0;
+      racer.vy = 0;
+      racer.airborne = false;
+      // A heavy landing scrubs speed; a clean one barely costs anything.
+      const severity = Math.min(1, impact / 420);
+      racer.speed *= 1 - 0.22 * severity;
+      if (severity > 0.45) racer.stunTimer = Math.max(racer.stunTimer, 0.25);
+      state.events.push({
+        type: 'land',
+        racerId: racer.id,
+        force: severity,
+        airTime: racer.airTime,
+      });
+      racer.airTime = 0;
+    }
+  } else if (sample.rampLip > 0 && Math.abs(racer.speed) > config.topSpeed * LAUNCH_MIN_SPEED) {
+    // Off the end of the ramp: convert pace into height.
+    const pace = Math.min(
+      1,
+      (Math.abs(racer.speed) / config.topSpeed - LAUNCH_MIN_SPEED) / (1 - LAUNCH_MIN_SPEED),
+    );
+    const peak = sample.rampLip * (LAUNCH_PEAK_MIN + (LAUNCH_PEAK_MAX - LAUNCH_PEAK_MIN) * pace);
+    racer.airborne = true;
+    racer.airTime = 0;
+    racer.vy = Math.sqrt(2 * GRAVITY * peak);
+    racer.hop = 0.01;
+    racer.drifting = false;
+    racer.driftCharge = 0;
+    state.events.push({ type: 'takeoff', racerId: racer.id, speed: Math.abs(racer.speed) });
+  }
+
   const edge = geometry.halfWidth;
   const barrier = edge + RUNOFF;
   const absLateral = Math.abs(loc.lateral);
   racer.offTrack = absLateral > edge;
 
-  if (racer.offTrack) {
+  if (racer.offTrack && !racer.airborne) {
     const drag = Math.pow(OFFTRACK_DRAG, tickScale);
     racer.speed *= drag;
     racer.vx *= drag;
@@ -396,8 +489,7 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
     racer.lapAccum.offTrack += dt;
   }
 
-  if (absLateral > barrier) {
-    const sample = geometry.samples[loc.index];
+  if (absLateral > barrier && !racer.airborne) {
     const side = Math.sign(loc.lateral) || 1;
     // Snap just inside the wall.
     const push = absLateral - barrier;
@@ -495,14 +587,27 @@ function updateStandings(state: RaceState): void {
   });
 }
 
-/** Elastic-ish push apart so pods jostle instead of overlapping. */
+/**
+ * Pod-to-pod contact. Separates the overlap, applies a restitution impulse
+ * along the contact normal, scrubs some tangential velocity so side-by-side
+ * rubbing slows both parties, and kicks the nose off line — a hit you can feel
+ * rather than a silent position swap.
+ *
+ * Pods are treated as equal mass: this is a racing game, and having one pod
+ * bully another purely because of its stat line is not fun to be on the end of.
+ */
 function resolveRacerCollisions(state: RaceState): void {
   const racers = state.racers;
   const minDist = RACER_RADIUS * 2;
+
   for (let i = 0; i < racers.length; i++) {
     for (let j = i + 1; j < racers.length; j++) {
       const a = racers[i];
       const b = racers[j];
+
+      // Pods that are not at a similar height pass over one another.
+      if (Math.abs(a.hop - b.hop) > 45) continue;
+
       const dx = b.x - a.x;
       const dz = b.z - a.z;
       const distSq = dx * dx + dz * dz;
@@ -511,37 +616,114 @@ function resolveRacerCollisions(state: RaceState): void {
       const dist = Math.sqrt(distSq);
       const nx = dx / dist;
       const nz = dz / dist;
+
+      // Positional correction, split evenly.
       const overlap = (minDist - dist) / 2;
       a.x -= nx * overlap;
       a.z -= nz * overlap;
       b.x += nx * overlap;
       b.z += nz * overlap;
 
-      const relative = (b.vx - a.vx) * nx + (b.vz - a.vz) * nz;
-      if (relative < 0) {
-        const impulse = relative * 0.7;
-        a.vx += nx * impulse;
-        a.vz += nz * impulse;
-        b.vx -= nx * impulse;
-        b.vz -= nz * impulse;
+      const rvx = b.vx - a.vx;
+      const rvz = b.vz - a.vz;
+      const normalVel = rvx * nx + rvz * nz;
+      if (normalVel >= 0) continue; // already separating
 
-        // Scale with closing speed. A flat per-frame penalty meant two pods
-        // merely running side by side scrubbed each other to a standstill.
-        const topSpeed = Math.max(a.config.topSpeed, b.config.topSpeed);
-        const severity = Math.min(1, Math.abs(relative) / (topSpeed * 0.4));
-        if (severity > 0.12) {
-          a.speed *= 1 - 0.2 * severity;
-          b.speed *= 1 - 0.2 * severity;
-        }
-        for (const racer of [a, b]) {
-          if (severity > 0.25 && racer.collisionCooldown === 0 && !racer.finished) {
-            racer.collisionCooldown = 0.35;
+      // Equal-mass impulse with restitution.
+      const impulse = -(1 + CONTACT_RESTITUTION) * normalVel * 0.5;
+      a.vx -= nx * impulse;
+      a.vz -= nz * impulse;
+      b.vx += nx * impulse;
+      b.vz += nz * impulse;
+
+      // Tangential scrub: rubbing alongside costs both pods momentum.
+      const tx = -nz;
+      const tz = nx;
+      const tangentVel = rvx * tx + rvz * tz;
+      const friction = tangentVel * CONTACT_FRICTION * 0.5;
+      a.vx += tx * friction;
+      a.vz += tz * friction;
+      b.vx -= tx * friction;
+      b.vz -= tz * friction;
+
+      const closing = Math.abs(normalVel);
+      const topSpeed = Math.max(a.config.topSpeed, b.config.topSpeed);
+      const severity = Math.min(1, closing / (topSpeed * 0.4));
+
+      // A glancing blow to the side yaws the pod; a square hit does not.
+      for (const [racer, sign] of [
+        [a, -1],
+        [b, 1],
+      ] as const) {
+        const heading = Math.cos(racer.angle) * nx + Math.sin(racer.angle) * nz;
+        const sideOn = 1 - Math.abs(heading);
+        racer.spin += sign * sideOn * severity * 2.6 * (racer.isPlayer ? 0.7 : 1);
+      }
+
+      if (severity > 0.1) {
+        a.speed *= 1 - 0.16 * severity;
+        b.speed *= 1 - 0.16 * severity;
+      }
+
+      if (severity > 0.18) {
+        const contactX = a.x + nx * RACER_RADIUS;
+        const contactZ = a.z + nz * RACER_RADIUS;
+        for (const [racer, other] of [
+          [a, b],
+          [b, a],
+        ] as const) {
+          if (racer.collisionCooldown === 0 && !racer.finished) {
+            racer.collisionCooldown = 0.3;
             racer.lapAccum.hits++;
-            state.events.push({ type: 'collision', racerId: racer.id, force: Math.abs(relative) });
+            state.events.push({
+              type: 'contact',
+              racerId: racer.id,
+              otherId: other.id,
+              force: severity,
+              x: contactX,
+              z: contactZ,
+            });
           }
         }
       }
     }
+  }
+}
+
+/**
+ * Running in clean air behind another pod tows you along. Requires being
+ * close, roughly in line and pointed the same way, which makes the tow
+ * something you set up rather than something that just happens.
+ */
+function updateSlipstream(state: RaceState): void {
+  for (const racer of state.racers) {
+    let best = 0;
+
+    for (const other of state.racers) {
+      if (other === racer || other.airborne || racer.airborne) continue;
+
+      const dx = other.x - racer.x;
+      const dz = other.z - racer.z;
+      const forward = dx * Math.cos(racer.angle) + dz * Math.sin(racer.angle);
+      if (forward <= 0 || forward > SLIP_RANGE) continue;
+
+      const lateral = Math.abs(-dx * Math.sin(racer.angle) + dz * Math.cos(racer.angle));
+      if (lateral > SLIP_MAX_LATERAL) continue;
+
+      // Both pods must be travelling the same way for there to be a wake.
+      let headingGap = other.angle - racer.angle;
+      while (headingGap > Math.PI) headingGap -= Math.PI * 2;
+      while (headingGap < -Math.PI) headingGap += Math.PI * 2;
+      if (Math.abs(headingGap) > 0.7) continue;
+
+      const byDistance = 1 - forward / SLIP_RANGE;
+      const byLateral = 1 - lateral / SLIP_MAX_LATERAL;
+      best = Math.max(best, byDistance * byLateral);
+    }
+
+    // Ease in and out so the tow does not flicker as gaps open and close.
+    racer.slipstream += (best - racer.slipstream) * 0.08;
+    if (racer.slipstream < 0.01) racer.slipstream = 0;
   }
 }
 

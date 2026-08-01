@@ -23,6 +23,20 @@ export interface TrackSample {
   /** Centre-line height. Purely visual — the physics runs in the XZ plane. */
   y: number;
   /**
+   * Height of a jump ramp above the road at this sample, 0 almost everywhere.
+   * Unlike `y`, this one *is* load-bearing: leaving the lip launches a pod.
+   */
+  ramp: number;
+  /** Rise per unit of arc length across the ramp. Negative past the lip. */
+  rampSlope: number;
+  /**
+   * Non-zero only on the final sample of a ramp, holding the lip height. Launch
+   * strength is derived from this rather than from `rampSlope`, which is a
+   * finite difference across the cliff and so scales with sample spacing — that
+   * made the same ramp launch differently on a long track than a short one.
+   */
+  rampLip: number;
+  /**
    * Roll of the road cross-section, in radians. Positive lifts the outside of a
    * positive-curvature corner. Also purely visual.
    */
@@ -123,6 +137,9 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
       curvature: 0,
       speedLimit: Infinity,
       y: 0,
+      ramp: 0,
+      rampSlope: 0,
+      rampLip: 0,
       bank: 0,
     });
   }
@@ -139,6 +156,7 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
 
   buildSpeedProfile(samples, spacing);
   buildElevationAndBanking(samples, data, length);
+  buildRamps(samples, data, length, spacing);
 
   return { samples, length, spacing, halfWidth: data.width / 2, curve, data };
 }
@@ -174,6 +192,41 @@ function buildElevationAndBanking(
     }
     // Smooth so banking eases in and out rather than snapping at corner entry.
     smoothRing(samples, 10, (s) => s.bank, (s, v) => (s.bank = v));
+  }
+}
+
+/**
+ * Ramps rise on a smooth ease so a pod is pushed upward gradually, then stop
+ * dead at the lip. The take-off speed comes from the slope at the lip, so a
+ * faster approach means a longer jump.
+ */
+function buildRamps(
+  samples: TrackSample[],
+  data: TrackData,
+  length: number,
+  spacing: number,
+): void {
+  if (!data.ramps?.length) return;
+  const count = samples.length;
+
+  for (const ramp of data.ramps) {
+    const startIndex = Math.round(((ramp.at % 1) * length) / spacing);
+    const steps = Math.max(2, Math.round(ramp.length / spacing));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      // Smoothstep: flat at the bottom, steepest in the middle, flat at the lip.
+      const eased = t * t * (3 - 2 * t);
+      const index = (((startIndex + i) % count) + count) % count;
+      samples[index].ramp = Math.max(samples[index].ramp, ramp.height * eased);
+      if (i === steps) samples[index].rampLip = Math.max(samples[index].rampLip, ramp.height);
+    }
+  }
+
+  for (let i = 0; i < count; i++) {
+    const ahead = samples[(i + 1) % count];
+    const behind = samples[(i - 1 + count) % count];
+    samples[i].rampSlope = (ahead.ramp - behind.ramp) / (2 * spacing);
+    samples[i].y += samples[i].ramp;
   }
 }
 

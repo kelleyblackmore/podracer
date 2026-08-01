@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { offsetPoint3, surfaceHeight, type TrackGeometry, type TrackSample } from './track';
+import type { SceneryKind, SceneryLayer } from '../types';
 
 /** Must match RUNOFF in engine.ts so what you see is what you collide with. */
 export const RUNOFF_WIDTH = 55;
@@ -27,8 +28,16 @@ export interface SceneryInstance {
   scale: number;
   height: number;
   rotation: number;
-  /** 0..1 brightness jitter applied to the theme's scenery colour. */
+  /** 0..1 brightness jitter applied to the layer's colour. */
   tint: number;
+}
+
+/** One instanced draw call per layer. */
+export interface SceneryBatch {
+  kind: SceneryKind;
+  color: string;
+  glow: boolean;
+  items: SceneryInstance[];
 }
 
 export interface TrackMeshes {
@@ -44,7 +53,9 @@ export interface TrackMeshes {
   railRight: THREE.BufferGeometry;
   startLine: THREE.BufferGeometry;
   posts: { x: number; y: number; z: number; angle: number }[];
-  scenery: SceneryInstance[];
+  scenery: SceneryBatch[];
+  /** Ramp side walls, so a jump reads as a structure and not a bump. */
+  rampFlanks: THREE.BufferGeometry | null;
   gantry: { x: number; y: number; z: number; angle: number };
   /** Lowest point of the circuit, so the ground plane can sit beneath it. */
   minHeight: number;
@@ -182,42 +193,89 @@ function rand(seed: number): number {
 }
 
 /**
- * Scatters props outside the barriers. Positions are pushed well clear of the
- * outer wall so nothing intersects the racing surface.
+ * Scatters props outside the barriers, one batch per layer. Layers let a theme
+ * put small clutter close in, landmarks in the mid-ground and a skyline on the
+ * horizon, which is what stops the surroundings reading as one repeated shape.
  */
 function buildScenery(
   geometry: TrackGeometry,
-  density: number,
+  layers: SceneryLayer[],
   groundY: number,
-): SceneryInstance[] {
-  if (density <= 0) return [];
-  const items: SceneryInstance[] = [];
-  const clearance = geometry.halfWidth + RUNOFF_WIDTH + 70;
-  const slots = Math.floor((geometry.length / 240) * density);
+): SceneryBatch[] {
+  const batches: SceneryBatch[] = [];
+  const barrier = geometry.halfWidth + RUNOFF_WIDTH;
 
-  for (let i = 0; i < slots; i++) {
-    const sample = geometry.samples[Math.floor(rand(i * 3.1) * geometry.samples.length)];
-    for (const side of [-1, 1]) {
-      if (rand(i * 7.3 + side) < 0.35) continue;
-      const seed = i * 13.7 + side * 2.3;
-      const distance = clearance + rand(seed) * 620;
-      const scale = 0.55 + rand(seed + 1.1) * 1.5;
+  layers.forEach((layer, layerIndex) => {
+    const items: SceneryInstance[] = [];
+    const slots = Math.max(1, Math.round((geometry.length / 1000) * layer.density));
+
+    for (let i = 0; i < slots; i++) {
+      const seed = layerIndex * 977.3 + i * 31.7;
+      const sample =
+        geometry.samples[Math.floor(rand(seed) * geometry.samples.length) % geometry.samples.length];
+      const side = rand(seed + 0.5) < 0.5 ? -1 : 1;
+      const distance =
+        barrier + layer.minDistance + rand(seed + 1.3) * (layer.maxDistance - layer.minDistance);
       const point = offsetPoint3(sample, side * distance);
-      // Props are planted on the ground plane and grown up past the road, so
-      // they never hang in mid-air above an elevated section of circuit.
-      const peak = sample.y + 90 + rand(seed + 2.2) * 320;
+      const peak =
+        sample.y + layer.minHeight + rand(seed + 2.7) * (layer.maxHeight - layer.minHeight);
+
       items.push({
         x: point.x,
         y: groundY,
         z: point.z,
-        scale,
-        height: Math.max(60, peak - groundY),
-        rotation: rand(seed + 3.3) * Math.PI * 2,
-        tint: rand(seed + 4.4),
+        scale: layer.scale * (0.7 + rand(seed + 3.9) * 0.6),
+        // Planted on the ground and grown past the road, so nothing floats.
+        height: Math.max(40, peak - groundY),
+        rotation: rand(seed + 5.1) * Math.PI * 2,
+        tint: rand(seed + 6.3),
       });
     }
+
+    batches.push({ kind: layer.kind, color: layer.color, glow: Boolean(layer.glow), items });
+  });
+
+  return batches;
+}
+
+/** Angled side walls flanking every ramp. */
+function buildRampFlanks(geometry: TrackGeometry): THREE.BufferGeometry | null {
+  const ramped = geometry.samples.some((sample) => sample.ramp > 0.5);
+  if (!ramped) return null;
+
+  const half = geometry.halfWidth;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  let vertex = 0;
+
+  const count = geometry.samples.length;
+  for (let i = 0; i < count; i++) {
+    const sample = geometry.samples[i];
+    const next = geometry.samples[(i + 1) % count];
+    if (sample.ramp < 0.5 && next.ramp < 0.5) continue;
+
+    for (const side of [-1, 1]) {
+      const a = offsetPoint3(sample, side * half);
+      const b = offsetPoint3(next, side * half);
+      // Skirt from the road edge down to where the ramp meets the ground.
+      positions.push(
+        a.x, a.y, a.z,
+        b.x, b.y, b.z,
+        b.x, b.y - next.ramp, b.z,
+        a.x, a.y - sample.ramp, a.z,
+      );
+      indices.push(vertex, vertex + 1, vertex + 2, vertex, vertex + 2, vertex + 3);
+      vertex += 4;
+    }
   }
-  return items;
+
+  if (!positions.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
 }
 
 export function buildTrackMeshes(geometry: TrackGeometry): TrackMeshes {
@@ -277,7 +335,8 @@ export function buildTrackMeshes(geometry: TrackGeometry): TrackMeshes {
     }),
     startLine: buildStartBand(geometry, half),
     posts,
-    scenery: buildScenery(geometry, theme.sceneryDensity, groundY),
+    scenery: buildScenery(geometry, theme.layers, groundY),
+    rampFlanks: buildRampFlanks(geometry),
     gantry: { x: start.x, y: start.y, z: start.z, angle: Math.atan2(start.tz, start.tx) },
     minHeight,
   };
@@ -288,6 +347,8 @@ export function disposeTrackMeshes(meshes: TrackMeshes): void {
     if (value instanceof THREE.BufferGeometry) value.dispose();
   }
 }
+
+export type { SceneryKind };
 
 /** Surface height under a racer, for sitting pods and the camera on the road. */
 export function racerHeight(sample: TrackSample, lateral: number): number {
