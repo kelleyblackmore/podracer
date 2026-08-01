@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify the built site is self-contained
+        # A stray CDN <script>/<link> would make the published game depend on a
+        # third party at runtime; the whole point is that it is self-hosted.
+        # Google Fonts is the one allowed external origin, and it degrades to a
+        # local fallback font if it is unreachable.
+        run: |
+          external=$(grep -oE '(src|href)="https?://[^"]+"' dist/index.html \
+            | grep -vE 'fonts\.(googleapis|gstatic)\.com' || true)
+          if [ -n "$external" ]; then
+            echo "::error::dist/index.html references an unexpected external origin"
+            echo "$external"
+            exit 1
+          fi
+          echo "No unexpected external origins in dist/index.html"
