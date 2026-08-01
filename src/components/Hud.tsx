@@ -29,6 +29,12 @@ interface HudProps {
   cameraMode: CameraMode;
   muted: boolean;
   lastLapFlash: { time: number; isBest: boolean } | null;
+  /**
+   * Small screens keep the bottom of the display clear for the touch pads and
+   * drop the panels that don't fit. Without this the throttle pad sits directly
+   * under the speed readout and the steering pads under the minimap.
+   */
+  compact: boolean;
   onToggleCamera: () => void;
   onToggleMute: () => void;
   onPause: () => void;
@@ -53,7 +59,8 @@ function IconButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`rounded-full border p-2.5 backdrop-blur transition-colors sm:p-3 ${
+      // min-h/w 44px is the smallest reliable touch target.
+      className={`flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur transition-colors ${
         active
           ? 'border-blue-400/60 bg-blue-500/80 text-white'
           : 'border-slate-600/60 bg-slate-900/70 text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -70,6 +77,7 @@ export function Hud({
   cameraMode,
   muted,
   lastLapFlash,
+  compact,
   onToggleCamera,
   onToggleMute,
   onPause,
@@ -137,6 +145,25 @@ export function Hud({
             )}
           </div>
         )}
+
+        {compact && (
+          <div className="flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-950/75 px-3 py-2 backdrop-blur">
+            <div>
+              <span className="font-display text-xl font-bold leading-none">
+                {Math.min(Math.max(lap, 1), totalLaps)}
+              </span>
+              <span className="text-sm text-slate-500">/{totalLaps}</span>
+              <div className="text-[9px] uppercase tracking-wider text-slate-500">Lap</div>
+            </div>
+            {fieldSize > 1 && (
+              <div className="border-l border-slate-700 pl-3">
+                <span className="font-display text-xl font-bold leading-none">{position}</span>
+                <span className="text-sm text-slate-500">/{fieldSize}</span>
+                <div className="text-[9px] uppercase tracking-wider text-slate-500">Pos</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Top right: controls */}
@@ -144,12 +171,16 @@ export function Hud({
         <IconButton label={`Camera: ${cameraMode}`} onClick={onToggleCamera}>
           <Eye className="h-5 w-5" />
         </IconButton>
-        <IconButton label={muted ? 'Unmute' : 'Mute'} onClick={onToggleMute} active={!muted}>
-          {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
-        </IconButton>
-        <IconButton label="Restart race" onClick={onRestart}>
-          <RotateCcw className="h-5 w-5" />
-        </IconButton>
+        {!compact && (
+          <>
+            <IconButton label={muted ? 'Unmute' : 'Mute'} onClick={onToggleMute} active={!muted}>
+              {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+            </IconButton>
+            <IconButton label="Restart race" onClick={onRestart}>
+              <RotateCcw className="h-5 w-5" />
+            </IconButton>
+          </>
+        )}
         <IconButton label="Pause" onClick={onPause}>
           <Pause className="h-5 w-5" />
         </IconButton>
@@ -159,7 +190,7 @@ export function Hud({
       </div>
 
       {/* Right: standings */}
-      {fieldSize > 1 && (
+      {!compact && fieldSize > 1 && (
         <div className="absolute right-4 top-24 w-40 rounded-xl border border-slate-700/60 bg-slate-950/70 p-2 backdrop-blur sm:right-6 sm:top-28">
           <div className="px-1 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
             Order
@@ -182,7 +213,9 @@ export function Hud({
         </div>
       )}
 
-      {/* Bottom left: race state */}
+      {/* Bottom left: race state. On compact screens this moves up into the
+          left column so the bottom band belongs entirely to the touch pads. */}
+      {!compact && (
       <div className="absolute bottom-4 left-4 rounded-xl border border-slate-700/60 bg-slate-950/75 px-4 py-3 backdrop-blur sm:bottom-6 sm:left-6">
         <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
           {trackName}
@@ -214,9 +247,17 @@ export function Hud({
           )}
         </div>
       </div>
+      )}
 
-      {/* Bottom right: speed + drift charge */}
-      <div className="absolute bottom-4 right-4 flex flex-col items-end sm:bottom-6 sm:right-6">
+      {/* Speed + drift charge. Anchored mid-right on compact screens: bottom
+          right is where the throttle pad lives. */}
+      <div
+        className={
+          compact
+            ? 'absolute right-4 top-1/2 flex -translate-y-1/2 flex-col items-end'
+            : 'absolute bottom-4 right-4 flex flex-col items-end sm:bottom-6 sm:right-6'
+        }
+      >
         <div className="mb-2 flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
             <span
@@ -228,7 +269,7 @@ export function Hud({
             </span>
             <Zap className={`h-3 w-3 ${driftCharge > 0 ? 'text-amber-300' : 'text-slate-600'}`} />
           </div>
-          <div className="h-2 w-40 overflow-hidden rounded-full border border-slate-700/60 bg-slate-900/80 sm:w-48">
+          <div className={`h-2 overflow-hidden rounded-full border border-slate-700/60 bg-slate-900/80 ${compact ? 'w-28' : 'w-40 sm:w-48'}`}>
             <div
               className={`h-full transition-[width] duration-100 ${
                 chargeReady
@@ -244,15 +285,15 @@ export function Hud({
 
         <div className="flex items-baseline gap-2">
           <span
-            className={`font-display text-6xl font-black italic leading-none tabular-nums drop-shadow-lg sm:text-7xl ${
-              boosting ? 'text-fuchsia-300' : 'text-white'
-            }`}
+            className={`font-display font-black italic leading-none tabular-nums drop-shadow-lg ${
+              compact ? 'text-4xl' : 'text-6xl sm:text-7xl'
+            } ${boosting ? 'text-fuchsia-300' : 'text-white'}`}
           >
             {speed}
           </span>
           <span className="text-lg font-bold text-slate-400">MPH</span>
         </div>
-        <div className="mt-2 h-3 w-48 overflow-hidden rounded-full border border-slate-700/60 bg-slate-900 sm:w-64">
+        <div className={`mt-2 h-3 overflow-hidden rounded-full border border-slate-700/60 bg-slate-900 ${compact ? 'w-32' : 'w-48 sm:w-64'}`}>
           <div
             className="h-full bg-gradient-to-r from-emerald-400 via-amber-300 to-red-500 transition-[width] duration-100"
             style={{ width: `${Math.min(100, (speed / 570) * 100)}%` }}
@@ -265,7 +306,9 @@ export function Hud({
         <div className="absolute inset-0 flex items-center justify-center">
           <div
             key={Math.ceil(countdown)}
-            className="animate-count-pop font-display text-[9rem] font-black italic text-white drop-shadow-[0_0_30px_rgba(59,130,246,0.6)]"
+            className={`animate-count-pop font-display font-black italic text-white drop-shadow-[0_0_30px_rgba(59,130,246,0.6)] ${
+              compact ? 'text-[5rem]' : 'text-[9rem]'
+            }`}
           >
             {Math.ceil(countdown) || 'GO'}
           </div>

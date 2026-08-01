@@ -22,6 +22,7 @@ import {
   createWallTexture,
   disposeTextures,
 } from '../game/textures';
+import { maxPixelRatio } from '../game/device';
 import type { InputManager } from '../game/input';
 import type { SceneryKind } from '../types';
 
@@ -563,7 +564,8 @@ function Starfield({ count }: { count: number }) {
       // Rejection-free spherical shell distribution.
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const radius = 9000 + Math.random() * 3000;
+      // Must stay inside the camera far plane (14000) once the track extent is added.
+      const radius = 6800 + Math.random() * 2400;
       positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
       positions[i * 3 + 1] = Math.abs(radius * Math.cos(phi)) * 0.7 + 500;
       positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
@@ -667,16 +669,35 @@ function Simulation({ race, input, cameraMode, paused, onFrame }: Omit<SceneProp
 
 // --- Canvas ------------------------------------------------------------------
 
-export function RaceScene({ race, input, cameraMode, quality, paused, onFrame }: SceneProps) {
+export function RaceScene({
+  race,
+  input,
+  cameraMode,
+  quality,
+  paused,
+  onFrame,
+}: SceneProps) {
   const theme = race.geometry.data.theme;
   const stars = quality === 'high' ? theme.starCount : Math.round(theme.starCount * 0.35);
 
   return (
     <Canvas
       shadows={quality === 'high'}
-      dpr={quality === 'high' ? [1, 1.75] : 1}
-      gl={{ antialias: quality === 'high', powerPreference: 'high-performance' }}
-      camera={{ position: [0, 400, 400], fov: 62, near: 1, far: 30000 }}
+      dpr={[1, maxPixelRatio(quality)]}
+      gl={{
+        antialias: quality === 'high',
+        // 'high-performance' can fail outright on some mobile drivers, and on
+        // a phone the discrete-GPU hint buys nothing anyway.
+        powerPreference: quality === 'high' ? 'high-performance' : 'default',
+        // Cheaper on tile-based mobile GPUs; nothing here reads back the buffer.
+        depth: true,
+        stencil: false,
+      }}
+      // near/far was 1/30000. That 30000:1 ratio is fine on a 24-bit depth
+      // buffer but shreds precision on the 16-bit buffers common in mobile
+      // GPUs, and the road, curbs and start line are stacked barely a unit
+      // apart. Tightening the range keeps them from z-fighting.
+      camera={{ position: [0, 400, 400], fov: 62, near: 6, far: 14000 }}
     >
       <color attach="background" args={[theme.sky]} />
       <fog attach="fog" args={[theme.sky, theme.fogNear, theme.fogFar]} />

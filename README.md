@@ -21,7 +21,13 @@ No install, no account, no API key. Everything runs client-side.
 | `R` | Restart |
 | `M` | Mute |
 
-Touchscreens get on-screen controls; gamepads are read through the Gamepad API.
+Touchscreens get on-screen controls; gamepads are read through the Gamepad API. Phones
+play in **landscape** — portrait prompts you to rotate, because there is not enough room
+for the road and the control pads at once.
+
+On a phone the game starts in **Fast** graphics (no shadows or antialiasing, a capped
+pixel ratio and a lighter scenery field). Switch to High in the paddock if your device can
+take it; the choice is remembered.
 
 **The boost is the whole game.** Hold drift through a corner to build charge. Release above
 28% for a boost, above 85% for a double-strength one. Drifting costs you grip, so the fast

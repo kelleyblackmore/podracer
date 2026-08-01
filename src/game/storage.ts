@@ -1,4 +1,5 @@
 import type { CameraMode, RaceSettings, RecordEntry } from '../types';
+import { recommendedQuality } from './device';
 
 const RECORDS_KEY = 'podracer.records.v1';
 const PREFS_KEY = 'podracer.prefs.v1';
@@ -39,7 +40,10 @@ function write(key: string, value: unknown): void {
 }
 
 export function loadPrefs(): Prefs {
-  const prefs = read<Prefs>(PREFS_KEY, DEFAULT_PREFS);
+  // A first-time visitor on a phone gets the cheap renderer. Anyone who has
+  // already picked a quality keeps their choice — `read` merges stored on top.
+  const defaults: Prefs = { ...DEFAULT_PREFS, quality: recommendedQuality() };
+  const prefs = read<Prefs>(PREFS_KEY, defaults);
   return { ...prefs, settings: { ...DEFAULT_PREFS.settings, ...prefs.settings } };
 }
 
