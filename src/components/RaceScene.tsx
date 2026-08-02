@@ -9,7 +9,6 @@ import {
   disposeTrackMeshes,
   GROUND_DROP,
   LAYER,
-  racerHeight,
   RUNOFF_WIDTH,
   WALL_HEIGHT,
   type SceneryBatch,
@@ -82,11 +81,12 @@ function Pod({ racer, race }: { racer: Racer; race: RaceState }) {
     // Engine vibration scales with speed; smoothed so it reads as thrust, not noise.
     const vibe = Math.sin(performance.now() * 0.05) * speedRatio * 1.2;
 
-    // Sit on the banked, elevated road surface rather than a flat y = 0 plane.
+    // `altitude` is the single source of truth for height, maintained by the
+    // simulation. Re-deriving it here from the nearest whole sample would put
+    // the pod on a staircase and disagree with the physics mid-jump.
     const samples = race.geometry.samples;
     const sample = samples[racer.trackIndex];
-    const surface = racerHeight(sample, racer.lateral);
-    node.position.set(racer.x, surface + racer.hop + 6 + vibe, racer.z);
+    node.position.set(racer.x, racer.altitude + 6 + vibe, racer.z);
 
     // YXZ so heading applies first: X then rolls about the pod's own nose-to-tail
     // axis and Z pitches it. With the default XYZ order these two swap over and
@@ -547,7 +547,7 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
       if (event.type === 'land') {
         const racer = race.racers.find((r) => r.id === event.racerId);
         if (!racer) continue;
-        const surface = racerHeight(race.geometry.samples[racer.trackIndex], racer.lateral);
+        const surface = racer.altitude;
         const puff = quality === 'high' ? 14 : 6;
         for (let i = 0; i < puff; i++) {
           const particle = particles[nextParticle.current];
@@ -586,7 +586,7 @@ function Effects({ race, quality }: { race: RaceState; quality: 'low' | 'high' }
       if (!racer.drifting || Math.abs(racer.speed) < racer.config.topSpeed * 0.35) continue;
 
       const sample = race.geometry.samples[racer.trackIndex];
-      const surface = racerHeight(sample, racer.lateral);
+      const surface = racer.altitude;
 
       if (emitSkid) {
         const skid = skidPool[nextSkid.current];
@@ -733,7 +733,7 @@ function Simulation({ race, input, cameraMode, paused, onFrame }: Omit<SceneProp
     // Everything below is offset by the height of the road under the pod, so
     // the camera climbs and drops with an elevated circuit.
     const samples = race.geometry.samples;
-    const surface = racerHeight(samples[player.trackIndex], player.lateral);
+    const surface = player.altitude;
     // Look-ahead height keeps a crest from hiding the road beyond it.
     const aheadSample = samples[(player.trackIndex + 24) % samples.length];
 

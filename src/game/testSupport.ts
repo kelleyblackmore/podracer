@@ -1,6 +1,6 @@
 import { CARS, TRACKS } from '../constants';
 import type { CarConfig, RivalSkill, TrackData } from '../types';
-import { buildTrackGeometry, type TrackGeometry } from './track';
+import { buildTrackGeometry, surfaceHeight, type TrackGeometry } from './track';
 import {
   createRace,
   NEUTRAL_CONTROLS,
@@ -133,6 +133,10 @@ export function placeOnTrack(
   player.vx = Math.cos(angle) * speed;
   player.vz = Math.sin(angle) * speed;
   player.spin = 0;
+  // Sit the pod on the road at the new position. Without this it keeps the
+  // altitude from wherever it was, and the first step snaps it to the surface.
+  player.altitude = surfaceHeight(sample, 0);
+  player.hop = 0;
   player.drifting = false;
   player.driftCharge = 0;
   player.boostTimer = 0;

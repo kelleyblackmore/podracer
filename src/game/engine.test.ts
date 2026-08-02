@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CARS } from '../constants';
-import { offsetPoint } from './track';
+import { offsetPoint, RUNOFF_WIDTH } from './track';
 import {
   advance,
   findRampLip,
@@ -10,9 +10,6 @@ import {
   trackById,
 } from './testSupport';
 import { SPEED_TO_MPH } from './engine';
-
-/** Matches RUNOFF in engine.ts; the barrier sits this far beyond the surface. */
-const RUNOFF = 55;
 
 describe('the grid', () => {
   it('lines up behind the start line so nobody crosses it early', () => {
@@ -102,7 +99,7 @@ describe('barriers', () => {
     race.player.angle = Math.atan2(sample.nz, sample.nx);
     advance(race, 6, { throttle: 1 });
 
-    const barrier = geometry.halfWidth + RUNOFF;
+    const barrier = geometry.halfWidth + RUNOFF_WIDTH;
     expect(Math.abs(race.player.lateral)).toBeLessThanOrEqual(barrier + 1);
     expect(race.player.offTrack).toBe(true);
   });
@@ -154,7 +151,7 @@ describe('barriers', () => {
     race.player.angle = Math.atan2(sample.nz, sample.nx);
     advance(race, 6, { throttle: 1 });
 
-    const barrier = geometry.halfWidth + RUNOFF;
+    const barrier = geometry.halfWidth + RUNOFF_WIDTH;
     expect(Math.abs(race.player.lateral)).toBeGreaterThan(barrier - 2);
     // Still crawling under power rather than welded to the wall.
     expect(Math.abs(race.player.speed)).toBeGreaterThan(0.3);
@@ -252,6 +249,44 @@ describe('jumps', () => {
     const lipRatio = long.lip / short.lip;
     expect(peakRatio).toBeGreaterThan(lipRatio * 0.75);
     expect(peakRatio).toBeLessThan(lipRatio * 1.35);
+  });
+
+  /**
+   * Regression: the reported "it jumps after the ramp". Flight height was an
+   * offset from the road directly below, and the road fell away by the full
+   * ramp height at the lip — so the pod's rendered height plunged ~49 units in
+   * a single frame at take-off and then climbed back out. Height is now an
+   * absolute world value, so the arc cannot be broken by the ground beneath it.
+   */
+  it('keeps the pod height continuous across the lip', () => {
+    const track = trackById('oovo-iv');
+    const geometry = geometryFor(track);
+    const race = startRace(track, { laps: 1 });
+    advance(race, 4);
+
+    const lip = findRampLip(geometry);
+    const runUp = Math.round(300 / geometry.spacing);
+    placeOnTrack(race, (lip - runUp + geometry.samples.length) % geometry.samples.length, 0.95);
+
+    const heights: number[] = [race.player.altitude];
+    let launched = false;
+    for (let i = 0; i < 60 * 6; i++) {
+      advance(race, 1 / 60, { throttle: 1 });
+      heights.push(race.player.altitude);
+      if (race.player.airborne) launched = true;
+      if (launched && !race.player.airborne) break;
+    }
+
+    expect(launched).toBe(true);
+
+    let worstStep = 0;
+    for (let i = 1; i < heights.length; i++) {
+      worstStep = Math.max(worstStep, Math.abs(heights[i] - heights[i - 1]));
+    }
+
+    // At 60 Hz even a fast pod moves only a few units of height per frame; the
+    // old discontinuity was roughly 49.
+    expect(worstStep).toBeLessThan(12);
   });
 
   it('flies further the faster it hits the lip', () => {
@@ -398,9 +433,11 @@ describe('contact', () => {
     partner.z = race.player.z;
     partner.vx = 0;
     partner.vz = 0;
-    partner.hop = 120; // sailing over the top
+    // Height is driven by `altitude`; `hop` is derived from it each step, so
+    // setting hop directly would be silently overwritten.
+    partner.altitude = race.player.altitude + 120; // sailing over the top
     partner.airborne = true;
-    partner.vy = 40;
+    partner.vy = 0;
 
     const events = advance(race, 0.2);
     expect(playerContacts(events, race.player.id)).toHaveLength(0);
