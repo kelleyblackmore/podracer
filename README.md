@@ -98,10 +98,30 @@ npm run dev
 Other scripts:
 
 ```bash
+npm test          # full suite, ~1s
+npm run test:watch
 npm run type-check
 npm run build
 npm run preview
 ```
+
+## Tests
+
+The simulation is DOM-free, so the whole thing runs headlessly under Vitest in about
+a second — no browser, no mocking. CI runs it on every push and pull request.
+
+- **Unit** — track geometry (uniform arc length, curvature, banking, ramp lips, elevation
+  closure), `locate` including the crossover disambiguation, arc-length wrapping, time
+  formatting, and the offline Crew Chief.
+- **Integration** — every circuit at two rival skills races to the flag with the AI
+  driving the whole field, then asserts the invariants: laps counted correctly, no pod
+  crawling or beached, everyone inside the barriers, every launch matched by a landing,
+  standings consistent with progress, and no degenerate geometry or scenery on the track.
+
+Several tests are named after bugs that actually shipped — a pod pinned against a barrier
+being unable to steer out, rivals welding together at a crawl, launch height depending on
+circuit length rather than ramp height. Those cases are locked down so they cannot come
+back.
 
 Append `?debug` to the URL to expose `window.__PODRACER`, a deterministic test harness:
 

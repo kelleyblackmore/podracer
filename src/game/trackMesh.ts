@@ -193,6 +193,23 @@ function rand(seed: number): number {
 }
 
 /**
+ * Distance from a point to the nearest part of the centre line, scanning the
+ * whole loop. Props have no hint index to search around, and on a circuit that
+ * doubles back the nearest part of the track is often not the sample the prop
+ * was placed relative to.
+ */
+function distanceToTrack(geometry: TrackGeometry, x: number, z: number): number {
+  let best = Infinity;
+  for (const sample of geometry.samples) {
+    const dx = x - sample.x;
+    const dz = z - sample.z;
+    const distSq = dx * dx + dz * dz;
+    if (distSq < best) best = distSq;
+  }
+  return Math.sqrt(best);
+}
+
+/**
  * Scatters props outside the barriers, one batch per layer. Layers let a theme
  * put small clutter close in, landmarks in the mid-ground and a skyline on the
  * horizon, which is what stops the surroundings reading as one repeated shape.
@@ -214,9 +231,20 @@ function buildScenery(
       const sample =
         geometry.samples[Math.floor(rand(seed) * geometry.samples.length) % geometry.samples.length];
       const side = rand(seed + 0.5) < 0.5 ? -1 : 1;
-      const distance =
-        barrier + layer.minDistance + rand(seed + 1.3) * (layer.maxDistance - layer.minDistance);
-      const point = offsetPoint3(sample, side * distance);
+      const spread = layer.maxDistance - layer.minDistance;
+
+      // Placing a prop `distance` off *this* sample says nothing about how close
+      // it lands to the rest of the circuit. On a lobed or self-crossing layout
+      // that put props on the racing surface somewhere else on the lap, so push
+      // outward until the whole loop is clear, and give up rather than cheat.
+      let point = offsetPoint3(sample, side * (barrier + layer.minDistance + rand(seed + 1.3) * spread));
+      let attempt = 0;
+      while (distanceToTrack(geometry, point.x, point.z) <= barrier + 8 && attempt < 4) {
+        attempt++;
+        point = offsetPoint3(sample, side * (barrier + layer.maxDistance + attempt * 320));
+      }
+      if (distanceToTrack(geometry, point.x, point.z) <= barrier + 8) continue;
+
       const peak =
         sample.y + layer.minHeight + rand(seed + 2.7) * (layer.maxHeight - layer.minHeight);
 
