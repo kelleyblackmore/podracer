@@ -1,4 +1,16 @@
-import { Bot, Flag, Gauge, MapIcon, Play, Rocket, Settings2, Timer, Trophy } from 'lucide-react';
+import { useState } from 'react';
+import {
+  Bot,
+  Flag,
+  Gauge,
+  MapIcon,
+  Play,
+  Rocket,
+  Settings2,
+  Timer,
+  Trash2,
+  Trophy,
+} from 'lucide-react';
 import type { CarConfig, RaceSettings, RivalSkill, TrackData } from '../types';
 import { CARS, LAP_OPTIONS, TRACKS } from '../constants';
 import { formatTime } from '../game/format';
@@ -14,6 +26,7 @@ interface MenuProps {
   onSelectCar: (car: CarConfig) => void;
   onSettingsChange: (settings: RaceSettings) => void;
   onQualityChange: (quality: 'low' | 'high') => void;
+  onClearRecords: () => void;
   onStart: () => void;
 }
 
@@ -84,9 +97,12 @@ export function Menu({
   onSelectCar,
   onSettingsChange,
   onQualityChange,
+  onClearRecords,
   onStart,
 }: MenuProps) {
   const record = records[selectedTrack.id];
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const hasRecords = Object.keys(records).length > 0;
 
   return (
     <div className="h-full overflow-y-auto bg-slate-950">
@@ -119,8 +135,33 @@ export function Menu({
 
           {record && (
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-              <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-amber-400">
-                <Trophy className="h-3.5 w-3.5" /> Your record here
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-amber-400">
+                  <Trophy className="h-3.5 w-3.5" /> Your record here
+                </div>
+                {hasRecords && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirmingClear) {
+                        onClearRecords();
+                        setConfirmingClear(false);
+                      } else {
+                        setConfirmingClear(true);
+                      }
+                    }}
+                    onBlur={() => setConfirmingClear(false)}
+                    title="Clear personal bests on every circuit"
+                    className={`flex items-center gap-1.5 rounded px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      confirmingClear
+                        ? 'bg-red-600 text-white'
+                        : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'
+                    }`}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    {confirmingClear ? 'Erase all?' : 'Reset'}
+                  </button>
+                )}
               </div>
               <div className="flex gap-6">
                 <div>

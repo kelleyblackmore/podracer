@@ -21,15 +21,10 @@ export default defineConfig({
   build: {
     target: 'es2020',
     chunkSizeWarningLimit: 1200,
-    rollupOptions: {
-      output: {
-        // three dominates the bundle; splitting it lets the menu paint while
-        // the heavier 3D chunk is still arriving.
-        manualChunks: {
-          three: ['three', '@react-three/fiber'],
-          charts: ['recharts'],
-        },
-      },
-    },
+    // No manualChunks. Forcing `three` and `recharts` into named chunks pushed
+    // their shared vendor code (React) into those chunks, which made the entry
+    // import from them statically — so both were module-preloaded on first
+    // paint even though the views that use them are lazily imported. Letting
+    // Rollup split automatically keeps them in the lazy graph where they belong.
   },
 });
