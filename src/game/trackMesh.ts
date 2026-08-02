@@ -1,9 +1,15 @@
 import * as THREE from 'three';
-import { offsetPoint3, surfaceHeight, type TrackGeometry, type TrackSample } from './track';
+import {
+  offsetPoint3,
+  RUNOFF_WIDTH,
+  surfaceHeight,
+  type TrackGeometry,
+  type TrackSample,
+} from './track';
 import type { SceneryKind, SceneryLayer } from '../types';
 
-/** Must match RUNOFF in engine.ts so what you see is what you collide with. */
-export const RUNOFF_WIDTH = 55;
+// Re-exported so the renderer has one import site for track dimensions.
+export { RUNOFF_WIDTH } from './track';
 export const WALL_HEIGHT = 34;
 export const CURB_WIDTH = 9;
 /** How far the ground plane sits below the lowest point of the circuit. */

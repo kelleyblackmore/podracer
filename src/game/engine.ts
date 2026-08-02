@@ -1,9 +1,12 @@
 import type { CarConfig, LapTelemetry, RaceSettings, RivalSkill } from '../types';
 import {
   arcDelta,
+  interpolatedSurface,
+  RUNOFF_WIDTH,
   locate,
   offsetPoint,
   sampleAhead,
+  surfaceHeight,
   type TrackGeometry,
   type TrackSample,
 } from './track';
@@ -43,7 +46,14 @@ export interface Racer {
   /** Counts down while the racer is recovering from a barrier hit. */
   stunTimer: number;
 
-  /** Height above the road surface. 0 while grounded. */
+  /**
+   * Absolute world height of the pod's base. Flight is integrated here rather
+   * than as an offset from the road, because the road under a jumping pod is
+   * not continuous — measuring against it made the pod snap downward the
+   * instant it cleared the lip.
+   */
+  altitude: number;
+  /** Height above the road directly below. Derived from `altitude` each step. */
   hop: number;
   /** Vertical velocity, units/second. */
   vy: number;
@@ -132,8 +142,6 @@ export interface RaceState {
 export const SPEED_TO_MPH = 40;
 
 const COUNTDOWN_SECONDS = 3.4;
-/** Grip beyond the racing surface before the barrier. */
-const RUNOFF = 55;
 const RACER_RADIUS = 26;
 /** Downward acceleration while airborne, units/s². Tuned for ~1s jumps. */
 const GRAVITY = 460;
@@ -144,8 +152,13 @@ const GRAVITY = 460;
  */
 const LAUNCH_PEAK_MIN = 1.1;
 const LAUNCH_PEAK_MAX = 3.2;
-/** Below this fraction of top speed a pod just drives off the lip. */
+/** Below this fraction of top speed a pod just drives over the crest. */
 const LAUNCH_MIN_SPEED = 0.35;
+/**
+ * Vertical speed at touchdown that counts as a maximally bad landing. Generous:
+ * clearing a jump should feel like a reward, not a penalty to be endured.
+ */
+const LANDING_TOLERANCE = 620;
 /** Steering authority retained in the air — repulsors have little to push on. */
 const AIR_STEER = 0.28;
 /** Restitution for pod-to-pod contact. */
@@ -215,6 +228,7 @@ function makeRacer(
     driftCharge: 0,
     boostTimer: 0,
     stunTimer: 0,
+    altitude: 0,
     hop: 0,
     vy: 0,
     airborne: false,
@@ -283,6 +297,7 @@ export function createRace(
     racer.trackIndex = index;
     racer.s = sample.s;
     racer.lateral = side * laneSpacing;
+    racer.altitude = surfaceHeight(sample, racer.lateral);
     racer.totalProgress = sample.s - geometry.length; // lap -1: the approach lap
     racer.position = i + 1;
     racer.skillNoise = Math.random() * Math.PI * 2;
@@ -437,19 +452,30 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
 
   // --- Vertical: ramps, flight and landing ---
   const sample = geometry.samples[loc.index];
+  const surface = interpolatedSurface(geometry, loc.s, racer.lateral);
+
   if (racer.airborne) {
     racer.airTime += dt;
     racer.vy -= GRAVITY * dt;
-    racer.hop += racer.vy * dt;
-    if (racer.hop <= 0) {
+    racer.altitude += racer.vy * dt;
+
+    if (racer.altitude <= surface) {
+      racer.altitude = surface;
       const impact = Math.abs(racer.vy);
-      racer.hop = 0;
       racer.vy = 0;
       racer.airborne = false;
-      // A heavy landing scrubs speed; a clean one barely costs anything.
-      const severity = Math.min(1, impact / 420);
-      racer.speed *= 1 - 0.22 * severity;
-      if (severity > 0.45) racer.stunTimer = Math.max(racer.stunTimer, 0.25);
+
+      // Landing cost depends on how straight the pod is when it touches down,
+      // not just how far it fell — so a committed, tidy jump is rewarded and a
+      // sideways one is not.
+      let slip = Math.atan2(racer.vz, racer.vx) - racer.angle;
+      while (slip > Math.PI) slip -= Math.PI * 2;
+      while (slip < -Math.PI) slip += Math.PI * 2;
+      const sideways = Math.min(1, Math.abs(slip) / 0.5);
+      const severity = Math.min(1, impact / LANDING_TOLERANCE) * (0.5 + 0.5 * sideways);
+
+      racer.speed *= 1 - 0.16 * severity;
+      if (severity > 0.7) racer.stunTimer = Math.max(racer.stunTimer, 0.25);
       state.events.push({
         type: 'land',
         racerId: racer.id,
@@ -459,7 +485,7 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
       racer.airTime = 0;
     }
   } else if (sample.rampLip > 0 && Math.abs(racer.speed) > config.topSpeed * LAUNCH_MIN_SPEED) {
-    // Off the end of the ramp: convert pace into height.
+    // Over the crest: convert pace into height.
     const pace = Math.min(
       1,
       (Math.abs(racer.speed) / config.topSpeed - LAUNCH_MIN_SPEED) / (1 - LAUNCH_MIN_SPEED),
@@ -467,15 +493,21 @@ function stepRacer(state: RaceState, racer: Racer, dt: number): void {
     const peak = sample.rampLip * (LAUNCH_PEAK_MIN + (LAUNCH_PEAK_MAX - LAUNCH_PEAK_MIN) * pace);
     racer.airborne = true;
     racer.airTime = 0;
+    // Leave from exactly where the pod is, so the arc starts where the ramp ends.
+    racer.altitude = surface;
     racer.vy = Math.sqrt(2 * GRAVITY * peak);
-    racer.hop = 0.01;
     racer.drifting = false;
     racer.driftCharge = 0;
     state.events.push({ type: 'takeoff', racerId: racer.id, speed: Math.abs(racer.speed) });
+  } else {
+    // Grounded: follow the road, however it rises and falls.
+    racer.altitude = surface;
   }
 
+  racer.hop = Math.max(0, racer.altitude - surface);
+
   const edge = geometry.halfWidth;
-  const barrier = edge + RUNOFF;
+  const barrier = edge + RUNOFF_WIDTH;
   const absLateral = Math.abs(loc.lateral);
   racer.offTrack = absLateral > edge;
 

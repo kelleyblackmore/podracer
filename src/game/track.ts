@@ -61,6 +61,13 @@ export interface TrackLocation {
   lateral: number;
 }
 
+/**
+ * Width of the loose surface between the white line and the barrier. Single
+ * source of truth: the physics, the generated geometry and the tests all read
+ * this, so what you see is always what you collide with.
+ */
+export const RUNOFF_WIDTH = 55;
+
 /** Samples per loop. Higher = finer collision + AI resolution. */
 const SAMPLE_COUNT = 720;
 
@@ -158,6 +165,12 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
   return { samples, length, spacing, halfWidth: data.width / 2, curve, data };
 }
 
+/**
+ * Length of a ramp's descending far side, as a fraction of its rise. Shorter
+ * than the rise so the road falls away under a pod that has just launched.
+ */
+const RAMP_FALL_RATIO = 0.55;
+
 /** Peak roll of a banked corner, in radians (~16°). */
 const MAX_BANK = 0.28;
 const BANK_GAIN = 115;
@@ -205,17 +218,31 @@ function buildRamps(
 ): void {
   if (!data.ramps?.length) return;
   const count = samples.length;
+  const smoothstep = (t: number) => t * t * (3 - 2 * t);
 
   for (const ramp of data.ramps) {
     const startIndex = Math.round(((ramp.at % 1) * length) / spacing);
-    const steps = Math.max(2, Math.round(ramp.length / spacing));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      // Smoothstep: flat at the bottom, steepest in the middle, flat at the lip.
-      const eased = t * t * (3 - 2 * t);
-      const index = (((startIndex + i) % count) + count) % count;
-      samples[index].ramp = Math.max(samples[index].ramp, ramp.height * eased);
-      if (i === steps) samples[index].rampLip = Math.max(samples[index].rampLip, ramp.height);
+    const riseSteps = Math.max(2, Math.round(ramp.length / spacing));
+    const fallSteps = Math.max(2, Math.round((ramp.length * RAMP_FALL_RATIO) / spacing));
+    const at = (offset: number) => samples[(((startIndex + offset) % count) + count) % count];
+
+    // Up the face...
+    for (let i = 0; i <= riseSteps; i++) {
+      const sample = at(i);
+      sample.ramp = Math.max(sample.ramp, ramp.height * smoothstep(i / riseSteps));
+    }
+
+    // ...over the crest, which is where a pod launches...
+    const crest = at(riseSteps);
+    crest.rampLip = Math.max(crest.rampLip, ramp.height);
+
+    // ...and back down the far side. The descent is what makes this a jump
+    // rather than a cliff: the road used to drop the full ramp height between
+    // two adjacent samples, leaving a wall in the surface for a pod in flight
+    // to fall through.
+    for (let j = 1; j <= fallSteps; j++) {
+      const sample = at(riseSteps + j);
+      sample.ramp = Math.max(sample.ramp, ramp.height * (1 - smoothstep(j / fallSteps)));
     }
   }
 
@@ -244,10 +271,36 @@ function smoothRing(
 
 /**
  * Height of the driving surface `lateral` units off the centre line, accounting
- * for banking. Used to sit pods and the camera on the road.
+ * for banking, at a single sample.
  */
 export function surfaceHeight(sample: TrackSample, lateral: number): number {
   return sample.y - lateral * Math.sin(sample.bank);
+}
+
+/**
+ * Same, but interpolated between samples using the racer's exact arc-length
+ * position. Sampling at whole indices makes the road a staircase: height holds
+ * steady for the few frames a pod spends between two samples and then steps,
+ * which on an elevated circuit reads as a constant jolt.
+ */
+export function interpolatedSurface(geometry: TrackGeometry, s: number, lateral: number): number {
+  const { samples, spacing } = geometry;
+  const count = samples.length;
+  const exact = s / spacing;
+  const base = Math.floor(exact);
+  const t = exact - base;
+  const a = samples[((base % count) + count) % count];
+  const b = samples[(((base + 1) % count) + count) % count];
+
+  const y = a.y + (b.y - a.y) * t;
+  const bank = a.bank + (b.bank - a.bank) * t;
+
+  // A banked plane extended hundreds of units past the barrier is fiction. A
+  // pod launched off the side of the circuit would otherwise land on it, far
+  // above or below the actual ground.
+  const reach = geometry.halfWidth + RUNOFF_WIDTH;
+  const bounded = Math.max(-reach, Math.min(reach, lateral));
+  return y - bounded * Math.sin(bank);
 }
 
 /**

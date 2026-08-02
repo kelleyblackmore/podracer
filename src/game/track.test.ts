@@ -69,6 +69,27 @@ describe('track geometry', () => {
     }
   });
 
+  /**
+   * Regression: a ramp used to rise to its lip and then drop its full height
+   * between two adjacent samples, leaving a vertical cliff in the road for a
+   * pod in flight to fall through. It now descends the far side.
+   */
+  it('descends the far side of a ramp instead of ending in a cliff', () => {
+    for (const track of TRACKS.filter((candidate) => candidate.ramps?.length)) {
+      const { samples } = geometryFor(track);
+      const tallest = Math.max(...track.ramps!.map((ramp) => ramp.height));
+
+      let worstDrop = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const next = samples[(i + 1) % samples.length];
+        worstDrop = Math.max(worstDrop, samples[i].ramp - next.ramp);
+      }
+
+      expect(worstDrop).toBeGreaterThan(0); // there is a descent at all
+      expect(worstDrop).toBeLessThan(tallest * 0.5);
+    }
+  });
+
   it('leaves circuits without ramps completely flat', () => {
     for (const track of TRACKS.filter((candidate) => !candidate.ramps?.length)) {
       const { samples } = geometryFor(track);
