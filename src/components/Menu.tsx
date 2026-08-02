@@ -109,9 +109,9 @@ export function Menu({
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.16),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(168,85,247,0.12),transparent_50%)]" />
 
       <div className="relative mx-auto grid max-w-6xl gap-8 p-6 py-12 lg:grid-cols-12 lg:py-20">
-        <div className="flex flex-col justify-center gap-6 lg:col-span-4">
+        <div className="flex flex-col justify-center gap-6 lg:col-span-5">
           <div>
-            <h1 className="bg-gradient-to-br from-white to-slate-500 bg-clip-text font-display text-6xl font-black italic tracking-tighter text-transparent md:text-7xl">
+            <h1 className="bg-gradient-to-br from-white to-slate-500 bg-clip-text font-display text-4xl font-black italic tracking-tighter text-transparent min-[400px]:text-5xl sm:text-6xl md:text-7xl lg:text-5xl xl:text-6xl">
               PODRACER
             </h1>
             <p className="-mt-1 ml-1 font-display text-sm font-bold tracking-[0.3em] text-blue-500">
@@ -193,7 +193,7 @@ export function Menu({
           </div>
         </div>
 
-        <div className="flex flex-col gap-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 backdrop-blur lg:col-span-8">
+        <div className="flex flex-col gap-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 backdrop-blur lg:col-span-7">
           <section>
             <h2 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-300">
               <Rocket className="h-4 w-4" /> Pod
