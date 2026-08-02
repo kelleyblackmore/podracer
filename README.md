@@ -135,6 +135,13 @@ __PODRACER.state();            // lap times, positions, collisions, track info
 This is how the physics is tested — it makes a full race reproducible without a human at
 the keyboard, and works even when `requestAnimationFrame` is throttled.
 
+## Loading
+
+The menu is the only thing loaded up front. The race view (three.js) and the results
+view (recharts) are lazily imported, and the race chunk is prefetched while you are
+choosing a circuit — so pressing START does not wait on a download, but a phone does not
+pay ~325 kB gzipped before it can render a button.
+
 ## How it works
 
 ```

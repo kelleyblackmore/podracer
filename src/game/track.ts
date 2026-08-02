@@ -27,13 +27,11 @@ export interface TrackSample {
    * Unlike `y`, this one *is* load-bearing: leaving the lip launches a pod.
    */
   ramp: number;
-  /** Rise per unit of arc length across the ramp. Negative past the lip. */
-  rampSlope: number;
   /**
    * Non-zero only on the final sample of a ramp, holding the lip height. Launch
-   * strength is derived from this rather than from `rampSlope`, which is a
-   * finite difference across the cliff and so scales with sample spacing — that
-   * made the same ramp launch differently on a long track than a short one.
+   * strength derives from this rather than from a finite difference across the
+   * cliff, which scales with sample spacing and so made the same ramp launch
+   * differently on a long circuit than a short one.
    */
   rampLip: number;
   /**
@@ -138,7 +136,6 @@ export function buildTrackGeometry(data: TrackData): TrackGeometry {
       speedLimit: Infinity,
       y: 0,
       ramp: 0,
-      rampSlope: 0,
       rampLip: 0,
       bank: 0,
     });
@@ -222,11 +219,8 @@ function buildRamps(
     }
   }
 
-  for (let i = 0; i < count; i++) {
-    const ahead = samples[(i + 1) % count];
-    const behind = samples[(i - 1 + count) % count];
-    samples[i].rampSlope = (ahead.ramp - behind.ramp) / (2 * spacing);
-    samples[i].y += samples[i].ramp;
+  for (const sample of samples) {
+    sample.y += sample.ramp;
   }
 }
 
